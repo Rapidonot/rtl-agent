@@ -1,0 +1,19 @@
+Design an 8-register by 16-bit CPU register file.
+Ports: input clk, rst, wr_en; input [2:0] wr_addr, rd_addr_a, rd_addr_b;
+input [15:0] wr_data; output [15:0] rd_data_a, rd_data_b.
+
+There is one synchronous write port and two independent combinational read ports.
+At each rising clock edge, active-high synchronous rst clears all writable registers.
+Reset has priority over wr_en. Otherwise, when wr_en is high and wr_addr != 0,
+store wr_data in the selected register. With wr_en low, preserve stored contents.
+Register r0 is hardwired to 16'd0: writes to address 0 have no effect and reads
+of address 0 always return zero, including before the first reset.
+
+Reads reflect the selected stored value immediately, without a clock edge.
+When a read and write select the same nonzero address, the old value is visible
+before the write edge and the new value is visible after the edge settles.
+There is no combinational write-through bypass.
+
+Test reset priority, ignored r0 writes, all writable addresses, independent read
+addresses, writes while disabled, same-address read/write timing, changing read
+addresses between clock edges and reset after loading nonzero contents.

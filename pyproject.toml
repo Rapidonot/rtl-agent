@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.25,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rtl-agent"
+version = "0.1.0"
+description = "Generate and verify CPU, GPU, and NPU building blocks with local EDA tools"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "openai>=2,<3",
+  "pydantic>=2.8,<3",
+  "rich>=13,<15",
+  "typer>=0.12,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "ruff>=0.9,<1"]
+
+[project.scripts]
+rtl-agent = "rtl_agent.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rtl_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["eda: requires iverilog, vvp and verilator on PATH"]
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/rtl_agent/cli.py" = ["B008"]

@@ -1,0 +1,22 @@
+Design a combinational 8-bit CPU ALU.
+Ports: input [7:0] a, b; input [2:0] op;
+output [7:0] result; output zero, carry, overflow.
+
+Opcode mapping:
+000 ADD: result = a + b modulo 256. carry is the ninth bit of the unsigned sum.
+001 SUB: result = a - b modulo 256. carry is 1 when a >= b (no borrow), else 0.
+010 AND; 011 OR; 100 XOR: bitwise operations on a and b.
+101 SLL: logical left shift of a by b[2:0], discarding shifted-out bits.
+110 SRL: logical right shift of a by b[2:0], filling with zeroes.
+111 SLT: signed two's-complement comparison, result = 8'd1 if signed(a) < signed(b),
+otherwise 8'd0.
+
+zero is 1 exactly when result == 0.
+overflow flags signed two's-complement overflow for ADD and SUB only.
+For ADD, overflow occurs when operand signs match and the result sign differs.
+For SUB, overflow occurs when operand signs differ and the result sign differs from a.
+For non-arithmetic operations, carry = 0 and overflow = 0.
+No clock, reset, state or inferred latches; assign every output for every input.
+
+Use a reference model to check every opcode, zero results, unsigned carry/borrow,
+signed overflow boundaries, signed comparisons and shift amounts 0 through 7.

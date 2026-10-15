@@ -1,0 +1,19 @@
+Design a signed INT8 multiply-accumulate NPU processing element.
+Ports: input clk, clear, en; input signed [7:0] a, b;
+output signed [19:0] acc.
+
+At every rising clock edge:
+- If clear is high, set acc to zero. Clear is synchronous and has priority over en.
+- Otherwise if en is high, update acc = acc + signed(a) * signed(b).
+- Otherwise hold acc unchanged.
+
+Compute the full signed 16-bit product and sign-extend it before adding to the
+20-bit signed accumulator. Overflow wraps modulo 2**20; do not saturate.
+The accumulator updates after each enabled rising edge without an extra pipeline
+stage. Operand changes between edges must not change acc. There is no separate
+reset input; initialize the element by asserting clear for a clock edge.
+
+Test positive, negative and mixed-sign products, zero operands, -128 and 127,
+repeated accumulation, enable-low hold behavior, clear while enabled and disabled,
+and positive and negative accumulator overflow. Use an independent reference model
+and verify results only after nonblocking assignments have settled.

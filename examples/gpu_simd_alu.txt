@@ -1,0 +1,19 @@
+Design a combinational 4-lane unsigned 8-bit GPU SIMD vector ALU.
+Ports: input [31:0] a, b; input [1:0] op; output [31:0] result.
+Each 32-bit vector packs four independent bytes. Lane i uses bits [8*i +: 8],
+for i = 0, 1, 2, 3; lane 0 is the least significant byte.
+
+Apply the selected operation independently to corresponding lanes:
+00 saturating ADD: min(unsigned(a_lane) + unsigned(b_lane), 255).
+01 saturating SUB: max(unsigned(a_lane) - unsigned(b_lane), 0).
+10 MIN: unsigned minimum of the two lane values.
+11 MAX: unsigned maximum of the two lane values.
+
+All lanes are unsigned; there is no carry or borrow propagation between lanes.
+Saturation applies to each byte separately. No clock, reset, flags or state.
+Assign the full output for every opcode and avoid inferred latches.
+
+Test all opcodes and all lanes. Include 0, 1, 127, 128, 254, 255, equal operands,
+exactly-255 sums, overflowing sums and underflowing differences. Mix boundary
+conditions across lanes in the same vector to detect lane ordering and carry
+leakage. Compare randomized vectors against an independent per-byte model.

@@ -1,0 +1,98 @@
+import hashlib
+import json
+from pathlib import Path
+
+import pytest
+
+from rtl_agent.agent import load_report
+from rtl_agent.providers import ProviderError
+
+SPEC = "Signed INT8 NPU MAC with synchronous clear and enable."
+pytestmark = pytest.mark.eda
+
+
+def test_real_npu_mac_passes_lint_compile_and_simulation(make_agent, design):
+    report = make_agent().run(SPEC)
+    assert report.passed, report.error
+    assert all(tool.passed for tool in report.attempts[0].tools)
+    directory = Path(report.run_dir)
+    assert (directory / "npu_neural_mac.sv").read_text() == design.rtl
+    assert (directory / "waves.vcd").stat().st_size > 0
+    assert load_report(directory).status == "passed"
+
+
+def test_functional_failure_repairs_rtl_without_changing_testbench(make_agent, design, provider):
+    design.rtl = design.rtl.replace("acc +", "acc -")
+    report = make_agent().run(SPEC)
+    assert [a.passed for a in report.attempts] == [False, True]
+    failed_simulation = report.attempts[0].tools[-1]
+    assert failed_simulation.stage == "simulate" and failed_simulation.returncode != 0
+    assert "expected=12 actual=-12" in failed_simulation.output
+    provider.repair.assert_called_once()
+    assert provider.repair.call_args.args[3] == design.testbench
+    directory = Path(report.run_dir)
+    for path in [directory / "tb.sv", *sorted((directory / "attempts").glob("*/tb.sv"))]:
+        assert path.read_bytes() == design.testbench.encode()
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == report.testbench_sha256
+    assert all(a.testbench_sha256 == report.testbench_sha256 for a in report.attempts)
+
+
+def test_attempt_budget_is_total_candidates(make_agent, design, provider):
+    design.rtl = design.rtl.replace("acc +", "acc -")
+    report = make_agent(max_attempts=1).run(SPEC)
+    assert report.status == "failed" and len(report.attempts) == 1
+    provider.repair.assert_not_called()
+    assert not (Path(report.run_dir) / "npu_neural_mac.sv").exists()
+
+
+def test_syntax_error_is_recorded_and_repaired(make_agent, design, provider):
+    design.rtl = design.rtl.replace("if (clear)", "if (clear")
+    report = make_agent().run(SPEC)
+    assert report.passed and len(report.attempts) == 2
+    tools = report.attempts[0].tools
+    assert {tool.stage for tool in tools} == {"lint", "compile"}
+    assert not any(tool.passed for tool in tools)
+    assert any(d.line is not None for tool in tools for d in tool.diagnostics)
+    assert provider.repair.call_args.args[-1] == report.attempts[0]
+
+
+def test_latch_warning_requires_repair_even_when_simulation_passes(make_agent, design):
+    design.rtl = design.rtl.replace(
+        "    always @(posedge clk)",
+        "    reg latched_en;\n"
+        "    always @* begin\n"
+        "        if (en) latched_en = en;\n"
+        "    end\n"
+        "    always @(posedge clk)",
+    ).replace("else if (en)", "else if (en && latched_en)")
+    report = make_agent().run(SPEC)
+    assert report.passed and len(report.attempts) == 2
+    lint, compile_result, simulation = report.attempts[0].tools
+    assert not lint.passed and "LATCH" in lint.output
+    assert compile_result.passed and simulation.passed
+
+
+def test_invalid_testbench_stops_without_repair(make_agent, design, provider):
+    design.testbench = "module tb; initial $finish; endmodule"
+    report = make_agent().run(SPEC)
+    assert report.status == "error" and report.attempts == []
+    assert "Initial testbench rejected" in report.error
+    provider.repair.assert_not_called()
+
+
+def test_provider_failure_preserves_partial_run(make_agent, design, provider):
+    design.rtl = design.rtl.replace("acc +", "acc -")
+    provider.repair.side_effect = ProviderError("Simulated network error")
+    report = make_agent().run(SPEC)
+    assert report.status == "error" and len(report.attempts) == 1
+    assert report.error == "Simulated network error"
+    directory = Path(report.run_dir)
+    assert json.loads((directory / "report.json").read_text())["status"] == "error"
+    assert (directory / "attempts/01/simulate.log").exists()
+
+
+def test_rtl_simulation_control_is_rejected_before_execution(make_agent, design):
+    design.rtl = design.rtl.replace("endmodule", "initial $finish;\nendmodule")
+    report = make_agent().run(SPEC)
+    assert report.passed
+    assert report.attempts[0].diagnostics and report.attempts[0].tools == []

@@ -1,0 +1,23 @@
+Design a pipelined GPU pixel alpha-blending ROP for one unsigned 8-bit channel.
+Ports: input clk, rst, valid_in; input [7:0] src, dst, alpha;
+output valid_out; output [7:0] pixel_out.
+
+For each accepted input, compute exactly:
+pixel_out = ((src * alpha) + (dst * (255 - alpha))) >> 8.
+Use unsigned arithmetic, full-width products and a wide sum before shifting.
+Discard fractional bits. Do not divide by 255, round, or change the formula:
+src=255 and alpha=255 intentionally produce 254, not 255.
+
+Use two registered stages: stage 1 captures the two products and input validity;
+stage 2 registers the shifted sum and output validity. An input sampled at rising
+edge n produces its output immediately after rising edge n+1. Thus valid_out after
+edge n+1 equals valid_in sampled at edge n, unless reset intervenes.
+Accept one input every cycle; there is no backpressure or ready signal.
+On invalid inputs insert bubbles: valid_out follows the delayed validity and
+pixel_out holds its previous value whenever no valid result is emitted.
+Active-high synchronous rst flushes both validity stages and clears all pipeline
+data and pixel_out to zero. Reset takes priority over valid_in.
+
+Test alpha 0, 1, 127, 128, 254, 255; source/destination extremes; mixed and
+back-to-back pixels; bubbles; held output during invalid cycles; and reset with
+transactions in flight. Check values, order and exact latency with a scoreboard.
