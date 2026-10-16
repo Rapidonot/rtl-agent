@@ -21,7 +21,7 @@ console = Console()
 
 
 def show_report(report: RunReport) -> None:
-    table = Table(title=f"RTL Agent · {report.status.upper()}")
+    table = Table(title=f"RTL Agent · {report.status.upper()}", padding=(0, 0))
     for heading in (
         "Attempt",
         "Lint",
