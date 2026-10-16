@@ -10,10 +10,13 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class DesignDraft(StrictModel):
+class RTLDesign(StrictModel):
     summary: str
     assumptions: list[str]
     rtl: str
+
+
+class DesignDraft(RTLDesign):
     testbench: str
 
 
@@ -51,6 +54,15 @@ class ToolResult(StrictModel):
     diagnostics: list[Diagnostic] = Field(default_factory=list)
 
 
+class SynthesisMetrics(StrictModel):
+    total_cells: int = 0
+    combinational_gates: int = 0
+    flip_flops: int = 0
+    latches: int = 0
+    logic_depth: int | None = None
+    cell_breakdown: dict[str, int] = Field(default_factory=dict)
+
+
 class Attempt(StrictModel):
     number: int
     rtl_sha256: str
@@ -59,6 +71,8 @@ class Attempt(StrictModel):
     passed: bool
     tools: list[ToolResult]
     diagnostics: list[Diagnostic] = Field(default_factory=list)
+    synthesis: SynthesisMetrics | None = None
+    waveform_trace: str | None = None
 
 
 class RunReport(StrictModel):
@@ -75,6 +89,7 @@ class RunReport(StrictModel):
     assumptions: list[str] = Field(default_factory=list)
     testbench_sha256: str | None = None
     attempts: list[Attempt] = Field(default_factory=list)
+    synthesis: SynthesisMetrics | None = None
     error: str | None = None
     run_dir: str
 

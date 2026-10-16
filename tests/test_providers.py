@@ -78,6 +78,27 @@ def test_live_sdk_generation_serialization_and_pydantic_parsing(make_provider, d
     assert result.rtl == design.rtl
 
 
+def test_supplied_testbench_generation_requests_only_rtl(make_provider, design):
+    def handler(request):
+        body = json.loads(request.content)
+        properties = body["text"]["format"]["schema"]["properties"]
+        assert set(properties) == {"rtl", "summary", "assumptions"}
+        assert design.testbench in body["input"][1]["content"]
+        return httpx.Response(
+            200,
+            json=response_body(
+                {
+                    "summary": "NPU MAC",
+                    "assumptions": [],
+                    "rtl": design.rtl,
+                }
+            ),
+        )
+
+    result = make_provider(handler).generate("NPU MAC", "npu_neural_mac", design.testbench)
+    assert result.testbench == design.testbench
+
+
 def test_repair_sdk_schema_excludes_testbench_and_receives_diagnostics(make_provider, design):
     def handler(request):
         body = json.loads(request.content)

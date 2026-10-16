@@ -1,16 +1,18 @@
 """Run local EDA tools and collect their verification results."""
 
+import json
 import os
 import re
 import shutil
 import subprocess
 import time
+from collections import deque
 from pathlib import Path
 
-from rtl_agent.models import Diagnostic, RunConfig, ToolResult
+from rtl_agent.models import Diagnostic, RunConfig, SynthesisMetrics, ToolResult
 from rtl_agent.policy import PASS_MARKER
 
-REQUIRED_TOOLS = ("iverilog", "vvp", "verilator")
+REQUIRED_TOOLS = ("iverilog", "vvp", "verilator", "yosys")
 
 
 class MissingToolError(RuntimeError):
@@ -26,7 +28,8 @@ def require_tools() -> dict[str, str]:
     missing = [name for name, path in paths.items() if path is None]
     if missing:
         raise MissingToolError(
-            f"Missing tools: {', '.join(missing)}. On macOS: brew install icarus-verilog verilator"
+            f"Missing tools: {', '.join(missing)}. "
+            "On macOS: brew install icarus-verilog verilator yosys"
         )
     return {name: path for name, path in paths.items() if path is not None}
 
@@ -170,12 +173,107 @@ def run_command(
     )
 
 
+def parse_synthesis(output: str, top: str) -> SynthesisMetrics:
+    """Find stat -json among Yosys log lines and count generic mapped cells."""
+    decoder = json.JSONDecoder()
+    for start in re.finditer(r"(?m)^\s*\{", output):
+        try:
+            stats, _ = decoder.raw_decode(output[start.start() :].lstrip())
+        except ValueError:
+            continue
+        modules = stats.get("modules", {})
+        module = modules.get(top, modules.get("\\" + top, {}))
+        counts = module.get("num_cells_by_type", stats.get("design", {}).get("num_cells_by_type"))
+        if not isinstance(counts, dict):
+            continue
+        flip_flops = sum(n for c, n in counts.items() if c.startswith(("$_DFF", "$_SDFF")))
+        latches = sum(n for c, n in counts.items() if c.startswith(("$_DLATCH", "$_SR")))
+        depths = [int(n) for n in re.findall(r"length\s*=\s*(\d+)", output)]
+        total = sum(counts.values())
+        return SynthesisMetrics(
+            total_cells=total,
+            combinational_gates=total - flip_flops - latches,
+            flip_flops=flip_flops,
+            latches=latches,
+            logic_depth=max(depths) if depths else None,
+            cell_breakdown=counts,
+        )
+    raise ValueError("Yosys output did not contain stat -json cell counts.")
+
+
+def extract_vcd_trace(vcd_path: Path, max_timestamps: int = 12) -> str:
+    """Keep the final timestamp snapshots, carrying forward unchanged signal values."""
+    if max_timestamps <= 0:
+        return ""
+    signals: dict[str, tuple[str, int]] = {}
+    scope = []
+    snapshots: deque[tuple[str, dict[str, str]]] = deque(maxlen=max_timestamps)
+    values: dict[str, str] = {}
+    timestamp = None
+    try:
+        with vcd_path.open(encoding="utf-8", errors="replace") as stream:
+            header = []
+            for line in stream:
+                header.append(line)
+                if "$enddefinitions" in line:
+                    break
+            header_text = "".join(header)
+            for entry in re.finditer(r"\$(scope|upscope|var)\b(.*?)\$end", header_text, re.DOTALL):
+                kind, definition = entry.groups()
+                parts = definition.split()
+                if kind == "scope":
+                    scope.append(parts[1])
+                elif kind == "upscope":
+                    scope.pop()
+                else:
+                    _, width, code, *name = parts
+                    # Aliased testbench/DUT ports share a code; display each code once.
+                    signals.setdefault(code, (".".join([*scope, "".join(name)]), int(width)))
+            tokens = (token for line in stream for token in line.split())
+            for token in tokens:
+                if token == "$comment":
+                    for comment in tokens:
+                        if comment == "$end":
+                            break
+                elif token.startswith("#") and token[1:].isdigit():
+                    if timestamp is not None:
+                        snapshots.append((timestamp, values.copy()))
+                    timestamp = token
+                elif token[0] in "bBrR":
+                    code = next(tokens, "")
+                    if code in signals:
+                        bits = token[1:].lower()
+                        width = signals[code][1]
+                        if token[0].lower() == "b" and set(bits) <= {"0", "1"} and bits:
+                            values[code] = f"0x{int(bits, 2):0{(width + 3) // 4}x}"
+                        else:
+                            values[code] = token.lower()
+                elif token[0] in "01xXzZ" and token[1:] in signals:
+                    values[token[1:]] = token[0].lower()
+            if timestamp is not None:
+                snapshots.append((timestamp, values.copy()))
+    except (OSError, ValueError, IndexError):
+        return ""
+    if not signals or not snapshots:
+        return ""
+    timescale = re.search(r"\$timescale\s+(.*?)\s*\$end", header_text, re.DOTALL)
+    unit = "".join(timescale.group(1).split()) if timescale else "VCD ticks"
+    columns = [f"Time ({unit})", *(name for name, _ in signals.values())]
+    rows = [" | ".join(columns), " | ".join("---" for _ in columns)]
+    rows.extend(
+        " | ".join([t, *(state.get(code, "?") for code in signals)]) for t, state in snapshots
+    )
+    return "\n".join(rows)
+
+
 class EDAToolchain:
     def __init__(self, config: RunConfig):
         self.config = config
         self.paths = require_tools()
 
-    def verify(self, directory: Path, rtl: Path, testbench: Path) -> list[ToolResult]:
+    def verify(
+        self, directory: Path, rtl: Path, testbench: Path
+    ) -> tuple[list[ToolResult], SynthesisMetrics | None]:
         top = self.config.top
         commands = [
             (
@@ -208,6 +306,7 @@ class EDAToolchain:
             ),
         ]
         results = []
+        synthesis = None
         for stage, command in commands:
             result = run_command(
                 command,
@@ -228,4 +327,33 @@ class EDAToolchain:
             )
             (directory / "simulate.log").write_text(result.output, encoding="utf-8")
             results.append(result)
-        return results
+        if results[-1].stage == "simulate" and results[-1].passed:
+            # Keep stdout: -q suppresses stat/ltp. Flatten and stop depth paths at FFs.
+            script = (
+                f"read_verilog -sv {json.dumps(rtl.name)}; synth -top {top} -flatten; "
+                "delete t:$scopeinfo; check -assert; ltp -noff; stat -json; "
+                "write_verilog -noattr netlist.v"
+            )
+            result = run_command(
+                [self.paths["yosys"], "-Q", "-T", "-p", script],
+                stage="synth",
+                cwd=directory,
+                timeout=self.config.timeout_seconds,
+                max_log_bytes=self.config.max_log_bytes,
+            )
+            if result.passed:
+                try:
+                    synthesis = parse_synthesis(result.output, top)
+                    if synthesis.latches:
+                        raise ValueError(
+                            f"Inferred {synthesis.latches} accidental level-sensitive latches; "
+                            "replace them with proper combinational defaults or clocked registers."
+                        )
+                except ValueError as exc:
+                    result.passed = False
+                    result.diagnostics.append(
+                        Diagnostic(tool="synth", severity="error", message=str(exc))
+                    )
+            (directory / "synth.log").write_text(result.output, encoding="utf-8")
+            results.append(result)
+        return results, synthesis

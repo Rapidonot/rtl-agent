@@ -14,8 +14,8 @@ TOP = "npu_neural_mac"
 
 @pytest.fixture
 def eda_tools():
-    if any(shutil.which(tool) is None for tool in ("iverilog", "vvp", "verilator")):
-        pytest.skip("Real EDA integration requires iverilog, vvp and verilator on PATH")
+    if any(shutil.which(tool) is None for tool in ("iverilog", "vvp", "verilator", "yosys")):
+        pytest.skip("Real EDA integration requires iverilog, vvp, verilator and yosys on PATH")
 
 
 @pytest.fixture

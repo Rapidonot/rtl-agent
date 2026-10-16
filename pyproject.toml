@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rtl-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Generate and verify CPU, GPU, and NPU building blocks with local EDA tools"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,7 +26,7 @@ packages = ["src/rtl_agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["eda: requires iverilog, vvp and verilator on PATH"]
+markers = ["eda: requires iverilog, vvp, verilator and yosys on PATH"]
 filterwarnings = ["error"]
 
 [tool.ruff]

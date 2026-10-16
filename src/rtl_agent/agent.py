@@ -11,7 +11,7 @@ from uuid import uuid4
 from rtl_agent.models import Attempt, Diagnostic, RunConfig, RunReport
 from rtl_agent.policy import validate_source, validate_top
 from rtl_agent.providers import Provider, ProviderError
-from rtl_agent.tools import EDAToolchain
+from rtl_agent.tools import EDAToolchain, extract_vcd_trace
 
 
 def utc_now() -> str:
@@ -52,13 +52,22 @@ def _save(report: RunReport) -> None:
         [
             "## Attempts",
             "",
-            "| Attempt | Lint | Compile | Simulation | Outcome |",
-            "| --- | --- | --- | --- | --- |",
+            "| Attempt | Lint | Compile | Simulation | Synthesis | Gates | DFFs | Depth | Result |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for attempt in report.attempts:
         by_stage = {t.stage: "pass" if t.passed else "fail" for t in attempt.tools}
-        values = [by_stage.get(s, "not run") for s in ("lint", "compile", "simulate")]
+        values = [by_stage.get(s, "not run") for s in ("lint", "compile", "simulate", "synth")]
+        metrics = attempt.synthesis
+        values.extend(
+            str(n) if n is not None else "—"
+            for n in (
+                metrics.combinational_gates if metrics else None,
+                metrics.flip_flops if metrics else None,
+                metrics.logic_depth if metrics else None,
+            )
+        )
         lines.append(
             f"| {attempt.number} | {' | '.join(values)} | {'pass' if attempt.passed else 'fail'} |"
         )
@@ -67,9 +76,9 @@ def _save(report: RunReport) -> None:
     lines.extend(
         [
             "",
-            "Passing means the fixed testbench and lint checks passed. Generated tests",
-            "are not an independent correctness proof. Synthesis, timing, CDC and formal",
-            "verification are outside Stage 1.",
+            "Passing means lint, the fixed testbench and latch-free synthesis passed.",
+            "Gate counts are an area proxy, not physical silicon area. Depth is a gate-level",
+            "path length, not a timing estimate. Passing is not a formal correctness proof.",
             "",
         ]
     )
@@ -89,9 +98,13 @@ class RTLAgent:
         self.toolchain = EDAToolchain(self.config)
         self.emit = on_event or (lambda message: None)
 
-    def run(self, spec: str) -> RunReport:
+    def run(self, spec: str, testbench: str | None = None) -> RunReport:
         if not spec.strip() or len(spec.encode("utf-8")) > 65536:
             raise ValueError("Specification must contain 1–65536 UTF-8 bytes.")
+        if testbench is not None:
+            problems = validate_source(testbench, top=self.config.top, is_testbench=True)
+            if problems:
+                raise ValueError("Supplied testbench rejected: " + " ".join(problems))
         run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8]
         directory = self.config.output_dir.expanduser().resolve() / run_id
         directory.mkdir(parents=True, exist_ok=False)
@@ -110,8 +123,13 @@ class RTLAgent:
         )
         _save(report)
         try:
-            self.emit("Generating RTL and a self-checking testbench…")
-            draft = self.provider.generate(spec, self.config.top)
+            if testbench is None:
+                self.emit("Generating RTL and a self-checking testbench…")
+                draft = self.provider.generate(spec, self.config.top)
+            else:
+                self.emit("Generating RTL for the supplied testbench…")
+                draft = self.provider.generate(spec, self.config.top, testbench)
+                draft.testbench = testbench
             (directory / "draft.json").write_text(
                 draft.model_dump_json(indent=2) + "\n", encoding="utf-8"
             )
@@ -135,22 +153,35 @@ class RTLAgent:
                 tb_copy = attempt_dir / "tb.sv"
                 tb_copy.write_bytes(testbench_bytes)
                 policy_problems = validate_source(rtl, top=self.config.top)
-                self.emit(f"Attempt {number}/{self.config.max_attempts}: lint, compile, simulate…")
+                self.emit(
+                    f"Attempt {number}/{self.config.max_attempts}: "
+                    "lint, compile, simulate, synthesize…"
+                )
                 diagnostics = [
                     Diagnostic(tool="source-policy", severity="error", message=message)
                     for message in policy_problems
                 ]
                 tools = []
+                synthesis = None
+                waveform_trace = None
                 if not policy_problems:
-                    tools = self.toolchain.verify(attempt_dir, rtl_path, tb_copy)
+                    tools, synthesis = self.toolchain.verify(attempt_dir, rtl_path, tb_copy)
+                    if any(t.stage == "simulate" and not t.passed for t in tools):
+                        waveform_trace = extract_vcd_trace(attempt_dir / "waves.vcd") or None
+                        if waveform_trace:
+                            (attempt_dir / "waveform_trace.txt").write_text(
+                                waveform_trace + "\n", encoding="utf-8"
+                            )
                 attempt = Attempt(
                     number=number,
                     rtl_sha256=digest(rtl.encode("utf-8")),
                     testbench_sha256=testbench_hash,
                     change_summary=change_summary,
-                    passed=not diagnostics and len(tools) == 3 and all(t.passed for t in tools),
+                    passed=not diagnostics and len(tools) == 4 and all(t.passed for t in tools),
                     tools=tools,
                     diagnostics=diagnostics,
+                    synthesis=synthesis,
+                    waveform_trace=waveform_trace,
                 )
                 report.attempts.append(attempt)
                 (attempt_dir / "attempt.json").write_text(
@@ -162,7 +193,9 @@ class RTLAgent:
                     (directory / f"{self.config.top}.sv").write_text(rtl, encoding="utf-8")
                     if (attempt_dir / "waves.vcd").is_file():
                         shutil.copyfile(attempt_dir / "waves.vcd", directory / "waves.vcd")
+                    shutil.copyfile(attempt_dir / "netlist.v", directory / "netlist.v")
                     report.status = "passed"
+                    report.synthesis = synthesis
                     break
                 if number < self.config.max_attempts:
                     self.emit("Sending diagnostics to the model for an RTL-only repair…")

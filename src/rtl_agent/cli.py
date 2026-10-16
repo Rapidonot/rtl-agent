@@ -1,4 +1,4 @@
-"""The Stage 1 command line interface."""
+"""Generate hardware, check the environment, and inspect saved runs."""
 
 import os
 from pathlib import Path
@@ -21,14 +21,28 @@ console = Console()
 
 
 def show_report(report: RunReport) -> None:
-    table = Table(title=f"RTL Agent · {report.status.upper()}")
-    for heading in ("Attempt", "Lint", "Compile", "Simulation", "Result"):
+    table = Table(title=f"RTL Agent · {report.status.upper()}", padding=(0, 0))
+    for heading in (
+        "Attempt",
+        "Lint",
+        "Compile",
+        "Simulation",
+        "Synthesis",
+        "Gates",
+        "DFFs",
+        "Depth",
+        "Result",
+    ):
         table.add_column(heading)
     for attempt in report.attempts:
         by_stage = {t.stage: "pass" if t.passed else "fail" for t in attempt.tools}
+        metrics = attempt.synthesis
         table.add_row(
             str(attempt.number),
-            *(by_stage.get(s, "—") for s in ("lint", "compile", "simulate")),
+            *(by_stage.get(s, "—") for s in ("lint", "compile", "simulate", "synth")),
+            str(metrics.combinational_gates) if metrics else "—",
+            str(metrics.flip_flops) if metrics else "—",
+            str(metrics.logic_depth) if metrics and metrics.logic_depth is not None else "—",
             Text("PASS" if attempt.passed else "FAIL", style="green" if attempt.passed else "red"),
         )
     console.print(table)
@@ -36,11 +50,11 @@ def show_report(report: RunReport) -> None:
         console.print(Text(report.error, style="red"))
     console.print(Text(f"Artifacts: {report.run_dir}"))
     if report.passed:
-        console.print("Passed the fixed testbench and lint checks; this is not a formal proof.")
+        console.print("Passed lint, the fixed testbench and synthesis; this is not a formal proof.")
 
 
-def _run(agent: RTLAgent, spec: str) -> None:
-    report = agent.run(spec)
+def _run(agent: RTLAgent, spec: str, testbench: str | None = None) -> None:
+    report = agent.run(spec, testbench)
     show_report(report)
     code = {"passed": 0, "failed": 1, "error": 2, "interrupted": 130}.get(report.status, 2)
     raise typer.Exit(code)
@@ -72,7 +86,7 @@ def doctor() -> None:
     )
     console.print(table)
     if any(path is None for path in paths.values()):
-        console.print("macOS: brew install icarus-verilog verilator")
+        console.print("macOS: brew install icarus-verilog verilator yosys")
         raise typer.Exit(2)
 
 
@@ -83,6 +97,10 @@ def generate(
     ] = None,
     spec_file: Annotated[
         Path | None, typer.Option("--spec-file", help="Read the spec from a UTF-8 file.")
+    ] = None,
+    tb_file: Annotated[
+        Path | None,
+        typer.Option("--tb-file", help="Use a fixed, self-checking SystemVerilog testbench."),
     ] = None,
     model: Annotated[
         str | None, typer.Option(envvar="RTL_AGENT_MODEL", help="OpenAI API model ID.")
@@ -107,6 +125,7 @@ def generate(
         raise typer.BadParameter("Set --model or RTL_AGENT_MODEL to your OpenAI model ID.")
     try:
         specification = spec if spec is not None else spec_file.read_text(encoding="utf-8")
+        testbench = tb_file.read_text(encoding="utf-8") if tb_file is not None else None
         config = RunConfig(
             top=top,
             max_attempts=max_attempts,
@@ -119,7 +138,7 @@ def generate(
             max_output_tokens=max_output_tokens,
         )
         agent = RTLAgent(provider, config, on_event=lambda text: console.print(Text(text)))
-        _run(agent, specification)
+        _run(agent, specification, testbench)
     except (ValueError, OSError, MissingToolError, ProviderError) as exc:
         console.print(Text(str(exc), style="red"))
         raise typer.Exit(2) from exc
