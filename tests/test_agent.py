@@ -11,13 +11,22 @@ SPEC = "Signed INT8 NPU MAC with synchronous clear and enable."
 pytestmark = pytest.mark.eda
 
 
-def test_real_npu_mac_passes_lint_compile_and_simulation(make_agent, design):
+def test_real_npu_mac_passes_all_four_stages(make_agent, design):
     report = make_agent().run(SPEC)
     assert report.passed, report.error
     assert all(tool.passed for tool in report.attempts[0].tools)
+    assert [t.stage for t in report.attempts[0].tools] == ["lint", "compile", "simulate", "synth"]
+    assert report.synthesis == report.attempts[0].synthesis
+    assert report.synthesis.flip_flops == 20
+    assert report.synthesis.combinational_gates > 0
+    assert report.synthesis.logic_depth > 0
+    assert report.synthesis.latches == 0
     directory = Path(report.run_dir)
     assert (directory / "npu_neural_mac.sv").read_text() == design.rtl
     assert (directory / "waves.vcd").stat().st_size > 0
+    assert (directory / "netlist.v").stat().st_size > 0
+    assert (directory / "attempts/01/synth.log").is_file()
+    assert "Synthesis | Gates | DFFs | Depth" in (directory / "report.md").read_text()
     assert load_report(directory).status == "passed"
 
 
@@ -28,6 +37,10 @@ def test_functional_failure_repairs_rtl_without_changing_testbench(make_agent, d
     failed_simulation = report.attempts[0].tools[-1]
     assert failed_simulation.stage == "simulate" and failed_simulation.returncode != 0
     assert "expected=12 actual=-12" in failed_simulation.output
+    assert report.attempts[0].waveform_trace
+    assert "0xffff4" in report.attempts[0].waveform_trace
+    assert "#" in report.attempts[0].waveform_trace
+    assert report.attempts[0].synthesis is None
     provider.repair.assert_called_once()
     assert provider.repair.call_args.args[3] == design.testbench
     directory = Path(report.run_dir)
@@ -41,6 +54,7 @@ def test_attempt_budget_is_total_candidates(make_agent, design, provider):
     design.rtl = design.rtl.replace("acc +", "acc -")
     report = make_agent(max_attempts=1).run(SPEC)
     assert report.status == "failed" and len(report.attempts) == 1
+    assert report.synthesis is None
     provider.repair.assert_not_called()
     assert not (Path(report.run_dir) / "npu_neural_mac.sv").exists()
 
@@ -67,7 +81,7 @@ def test_latch_warning_requires_repair_even_when_simulation_passes(make_agent, d
     ).replace("else if (en)", "else if (en && latched_en)")
     report = make_agent().run(SPEC)
     assert report.passed and len(report.attempts) == 2
-    lint, compile_result, simulation = report.attempts[0].tools
+    lint, compile_result, simulation, _ = report.attempts[0].tools
     assert not lint.passed and "LATCH" in lint.output
     assert compile_result.passed and simulation.passed
 
@@ -96,3 +110,45 @@ def test_rtl_simulation_control_is_rejected_before_execution(make_agent, design)
     report = make_agent().run(SPEC)
     assert report.passed
     assert report.attempts[0].diagnostics and report.attempts[0].tools == []
+
+
+def test_supplied_testbench_is_used_for_generation_and_every_repair(make_agent, design, provider):
+    reference = design.testbench + "\n// User reference testbench.\n"
+    design.testbench = "model output must not replace reference"
+    design.rtl = design.rtl.replace("acc +", "acc -")
+    report = make_agent().run(SPEC, testbench=reference)
+    assert [a.passed for a in report.attempts] == [False, True]
+    provider.generate.assert_called_once_with(SPEC, "npu_neural_mac", reference)
+    assert provider.repair.call_args.args[3] == reference
+    for path in Path(report.run_dir).rglob("tb.sv"):
+        assert path.read_text() == reference
+
+
+def test_invalid_supplied_testbench_is_rejected_before_api(make_agent, provider):
+    with pytest.raises(ValueError, match="Supplied testbench rejected"):
+        make_agent().run(SPEC, testbench="module tb; endmodule")
+    provider.generate.assert_not_called()
+
+
+def test_stage1_reports_remain_readable(make_agent):
+    report = make_agent().run(SPEC)
+    legacy = report.model_dump()
+    legacy.pop("synthesis")
+    for attempt in legacy["attempts"]:
+        attempt.pop("synthesis")
+        attempt.pop("waveform_trace")
+    directory = Path(report.run_dir)
+    (directory / "legacy.json").write_text(json.dumps(legacy))
+    assert load_report(directory / "legacy.json").synthesis is None
+
+
+def test_synthesis_failure_cannot_pass_run(make_agent):
+    agent = make_agent(max_attempts=1)
+    agent.toolchain.paths["yosys"] = "/usr/bin/false"
+    report = agent.run(SPEC)
+    assert report.status == "failed"
+    assert all(t.passed for t in report.attempts[0].tools[:3])
+    assert not report.attempts[0].tools[-1].passed
+    assert report.attempts[0].tools[-1].stage == "synth"
+    assert report.synthesis is None
+    assert not (Path(report.run_dir) / "npu_neural_mac.sv").exists()

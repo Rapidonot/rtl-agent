@@ -6,7 +6,7 @@ from typing import Protocol, TypeVar
 from openai import OpenAI, OpenAIError
 from pydantic import BaseModel, ValidationError
 
-from rtl_agent.models import Attempt, DesignDraft, RTLRepair
+from rtl_agent.models import Attempt, DesignDraft, RTLDesign, RTLRepair
 from rtl_agent.prompts import SYSTEM, generation_prompt, repair_prompt
 
 ResponseType = TypeVar("ResponseType", bound=BaseModel)
@@ -20,7 +20,7 @@ class Provider(Protocol):
     name: str
     model: str
 
-    def generate(self, spec: str, top: str) -> DesignDraft: ...
+    def generate(self, spec: str, top: str, testbench: str | None = None) -> DesignDraft: ...
 
     def repair(
         self, spec: str, top: str, rtl: str, testbench: str, attempt: Attempt
@@ -72,8 +72,12 @@ class OpenAIProvider:
             )
         return schema.model_validate(response.output_parsed)
 
-    def generate(self, spec: str, top: str) -> DesignDraft:
-        return self._request(DesignDraft, generation_prompt(spec, top))
+    def generate(self, spec: str, top: str, testbench: str | None = None) -> DesignDraft:
+        prompt = generation_prompt(spec, top, testbench)
+        if testbench is not None:
+            design = self._request(RTLDesign, prompt)
+            return DesignDraft(**design.model_dump(), testbench=testbench)
+        return self._request(DesignDraft, prompt)
 
     def repair(self, spec: str, top: str, rtl: str, testbench: str, attempt: Attempt) -> RTLRepair:
         return self._request(RTLRepair, repair_prompt(spec, top, rtl, testbench, attempt))
