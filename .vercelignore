@@ -1,0 +1,6 @@
+*
+!web/
+!web/index.html
+!scripts/
+!scripts/build-web.mjs
+!vercel.json

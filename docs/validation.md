@@ -1,4 +1,27 @@
-# Validation — 15 October 2026
+# Validation — 17 October 2026
+
+- `pytest -q`: **263 passed** with external socket connections blocked, on Linux
+  Python 3.12 and in the Python 3.11 Docker container, including real EDA tools.
+- Ruff lint passes for `src`, `tests` and `scripts`; changed Python files pass
+  formatting checks. JavaScript passes Node syntax checks.
+- Hosted browser checks use separate website/backend origins, a fixture provider
+  and real Verilator, Icarus and Yosys. They cover password rejection/unlock/lock,
+  a failed first attempt, frozen-testbench repair, both actual waveforms, the
+  gallery, per-run attempt limits, daily quota rejection and responsive layouts.
+- Existing local gallery and first-visit tour browser checks still pass. The tour
+  uses highlights without pointing arrows.
+- The Docker image builds and runs as a non-root user. Its health endpoint finds
+  all tools, and its Live API requires access while exposing only key presence.
+- Deployment packaging and frontend build tests confirm that configured secrets
+  are absent. Backend-upload tests mock the Hugging Face SDK; no deployment token
+  or OpenAI API access is needed for tests.
+
+Not verified: actual Vercel/GitHub/Hugging Face account connections, public cloud
+deployment, hosting sleep/rebuild behavior, macOS setup or live OpenAI generation
+and caption quality. No accounts or projects were created and nothing was pushed
+or published during this validation.
+
+## Earlier validation — 15 October 2026
 
 - `pytest -q`: **50 passed**, no skips and no warnings. Pytest warnings are errors.
 - `ruff check .` and `ruff format --check .`: passed.

@@ -1,0 +1,11 @@
+*
+!Dockerfile
+!pyproject.toml
+!README.md
+!src/
+!src/rtl_agent/
+!src/rtl_agent/*.py
+!web/
+!web/index.html
+!examples/
+!examples/*.txt

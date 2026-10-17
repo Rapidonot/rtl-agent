@@ -1,4 +1,4 @@
-"""Localhost-only web UI and background run API. Install the optional web extra."""
+"""Local or explicitly configured hosted web UI and background run API."""
 
 import ipaddress
 import json
@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from rtl_agent.agent import RTLAgent, _save, load_report
 from rtl_agent.captions import circuit_name
 from rtl_agent.control import RunControl, RunStopped
+from rtl_agent.hosting import DailyQuota, HostedAccess, HostedSettings
 from rtl_agent.models import RunConfig, RunReport
 from rtl_agent.policy import validate_top
 from rtl_agent.providers import OpenAIProvider, max_output_tokens_from_env
@@ -101,7 +102,14 @@ class Job:
 
 
 class RunManager:
-    def __init__(self, root: Path, timeout: float, provider_factory=None):
+    def __init__(
+        self,
+        root: Path,
+        timeout: float,
+        provider_factory=None,
+        admit_run=None,
+        redact_values: tuple[str, ...] = (),
+    ):
         self.root, self.timeout = root.resolve(), timeout
         self.root.mkdir(parents=True, exist_ok=True)
         self.provider_factory = provider_factory or (
@@ -112,6 +120,8 @@ class RunManager:
         self.lock = threading.Lock()
         self.active: Job | None = None
         self.jobs: dict[str, Job] = {}
+        self.admit_run = admit_run
+        self.redact_values = redact_values
 
     def start(self, request: RunRequest) -> str:
         with self.lock:
@@ -119,6 +129,8 @@ class RunManager:
                 raise HTTPException(
                     409, "A run is already active. Wait for it to finish or stop it."
                 )
+            if self.admit_run:
+                self.admit_run()
             job = Job(request=request, control=RunControl(self.timeout))
             self.active = job
         api_key = os.environ.get("OPENAI_API_KEY", "")
@@ -142,7 +154,12 @@ class RunManager:
                 # Redact the full chained traceback before passing it to logging.
                 # Do not attach the original exception: a formatter could expose it again.
                 details = traceback.format_exc()
-                for key in {api_key, os.environ.get("OPENAI_API_KEY", "")} - {""}:
+                for key in {
+                    api_key,
+                    os.environ.get("OPENAI_API_KEY", ""),
+                    os.environ.get("RTL_AGENT_LIVE_PASSWORD", ""),
+                    *self.redact_values,
+                } - {""}:
                     for form in (key, repr(key)[1:-1], json.dumps(key)[1:-1]):
                         details = details.replace(form, "[redacted]")
                 logging.exception("Live run worker failed:\n%s", details, exc_info=False)
@@ -273,11 +290,24 @@ class RunManager:
 
 
 def create_app(
-    *, runs_dir: Path = Path("runs"), run_timeout: float = 600, provider_factory=None
+    *,
+    runs_dir: Path = Path("runs"),
+    run_timeout: float = 600,
+    provider_factory=None,
+    hosted: HostedSettings | None = None,
 ) -> FastAPI:
     if not 0 < run_timeout <= 1800:
         raise ValueError("Run timeout must be between 0 and 1800 seconds.")
-    manager = RunManager(runs_dir, run_timeout, provider_factory)
+    manager = RunManager(
+        runs_dir,
+        min(run_timeout, hosted.run_timeout) if hosted else run_timeout,
+        provider_factory,
+        redact_values=(hosted.password,) if hosted else (),
+    )
+    access = HostedAccess(hosted) if hosted else None
+    quota = DailyQuota(manager.root, hosted.daily_runs) if hosted else None
+    if quota:
+        manager.admit_run = quota.reserve
 
     @asynccontextmanager
     async def lifespan(app):
@@ -289,23 +319,82 @@ def create_app(
     app.state.manager = manager
 
     @app.middleware("http")
-    async def local_only(request: Request, call_next):
+    async def guard_request(request: Request, call_next):
+        origin = request.headers.get("origin")
+        cors = {}
+        if hosted and origin in hosted.origins:
+            cors = {"Access-Control-Allow-Origin": origin, "Vary": "Origin"}
         try:
-            remote = ipaddress.ip_address(request.client.host)
-            hostname = urlsplit("http://" + request.headers.get("host", "")).hostname
-            allowed = remote.is_loopback and hostname in LOCAL_HOSTS
+            parsed_host = urlsplit("http://" + request.headers.get("host", ""))
+            hostname = parsed_host.hostname
+            if hosted:
+                allowed = hostname in {*LOCAL_HOSTS, hosted.backend_host}
+                if origin and origin not in hosted.origins:
+                    allowed = False
+            else:
+                remote = ipaddress.ip_address(request.client.host)
+                allowed = remote.is_loopback and hostname in LOCAL_HOSTS
+                if origin and origin != f"http://{request.headers.get('host', '')}":
+                    allowed = False
+            if parsed_host.username is not None or parsed_host.password is not None:
+                allowed = False
         except (ValueError, AttributeError):
             allowed = False
-        origin = request.headers.get("origin")
-        if origin and origin != f"http://{request.headers.get('host', '')}":
-            allowed = False
         if not allowed:
-            return JSONResponse({"detail": "Local same-origin requests only."}, status_code=403)
+            return JSONResponse(
+                {
+                    "detail": "Website origin or backend host is not allowed."
+                    if hosted
+                    else "Local same-origin requests only."
+                },
+                status_code=403,
+            )
+        if hosted and request.method == "OPTIONS":
+            requested_headers = {
+                item.strip().lower()
+                for item in request.headers.get("access-control-request-headers", "").split(",")
+                if item.strip()
+            }
+            if (
+                not cors
+                or request.headers.get("access-control-request-method") not in {"GET", "POST"}
+                or not requested_headers <= {"authorization", "content-type"}
+            ):
+                return JSONResponse(
+                    {"detail": "Preflight request is not allowed."}, status_code=403
+                )
+            return Response(
+                status_code=204,
+                headers={
+                    **cors,
+                    "Access-Control-Allow-Methods": "GET, POST",
+                    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+                    "Access-Control-Max-Age": "600",
+                },
+            )
+        if access:
+            required = request.url.path.startswith("/api/") and request.url.path not in {
+                "/api/health",
+                "/api/examples",
+            }
+            try:
+                request.state.authenticated = access.authenticate(
+                    request.headers.get("authorization"), required=required
+                )
+            except HTTPException as exc:
+                return JSONResponse(
+                    {"detail": exc.detail},
+                    status_code=exc.status_code,
+                    headers={**cors, **(exc.headers or {}), "Cache-Control": "no-store"},
+                )
         response = await call_next(request)
+        response.headers.update(cors)
+        response.headers["X-Content-Type-Options"] = "nosniff"
         if request.url.path.startswith("/api/"):
             body = b"".join([chunk async for chunk in response.body_iterator])
-            key = os.environ.get("OPENAI_API_KEY", "")
-            if key:
+            for key in {os.environ.get("OPENAI_API_KEY", ""), hosted.password if hosted else ""} - {
+                ""
+            }:
                 body = body.replace(key.encode(), b"[redacted]")
                 escaped = json.dumps(key)[1:-1].encode()
                 body = body.replace(escaped, b"[redacted]")
@@ -321,9 +410,20 @@ def create_app(
         )
 
     @app.get("/api/health")
-    def get_health():
+    def get_health(request: Request):
         result = health()
         result["busy"] = manager.active is not None
+        if hosted:
+            result.update(
+                hosted=True,
+                authentication_required=True,
+                authenticated=request.state.authenticated,
+                limits={
+                    "max_attempts": hosted.max_attempts,
+                    "daily_runs": hosted.daily_runs,
+                    "run_timeout_seconds": hosted.run_timeout,
+                },
+            )
         return result
 
     @app.get("/api/examples")
@@ -349,6 +449,10 @@ def create_app(
         ready = health()
         if not ready["live_available"]:
             raise HTTPException(503, ready["reason"])
+        if hosted:
+            request = request.model_copy(
+                update={"max_attempts": min(request.max_attempts, hosted.max_attempts)}
+            )
         return {"run_id": manager.start(request)}
 
     @app.get("/api/run/{run_id}")

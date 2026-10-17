@@ -80,7 +80,13 @@ def test_icarus_13_finish_notice_is_informational(tmp_path):
 
 def test_eda_process_does_not_receive_api_credentials(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "secret-do-not-forward")
-    result = run_python(tmp_path, "import os; print('OPENAI_API_KEY' in os.environ)")
+    monkeypatch.setenv("RTL_AGENT_LIVE_PASSWORD", "private-live-access")
+    monkeypatch.setenv("OTHER_SECRET", "private-other-secret")
+    result = run_python(
+        tmp_path,
+        "import os; print(any(k in os.environ for k in "
+        "['OPENAI_API_KEY', 'RTL_AGENT_LIVE_PASSWORD', 'OTHER_SECRET']))",
+    )
     assert result.output.strip() == "False"
 
 

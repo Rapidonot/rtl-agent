@@ -166,3 +166,28 @@ def test_serve_runs_one_local_server_without_access_logging(monkeypatch):
     assert calls == [
         {"host": "127.0.0.1", "port": 8123, "access_log": False, "proxy_headers": False}
     ]
+
+
+def test_hosted_server_requires_explicit_secrets_and_domains(monkeypatch):
+    pytest.importorskip("fastapi")
+    monkeypatch.delenv("RTL_AGENT_PUBLIC_HOST", raising=False)
+    result = runner.invoke(app, ["serve-hosted"])
+    assert result.exit_code == 2
+    assert "RTL_AGENT_PUBLIC_HOST" in result.output
+
+
+def test_hosted_server_runs_one_worker_only_with_valid_settings(monkeypatch, tmp_path):
+    pytest.importorskip("fastapi")
+    uvicorn = pytest.importorskip("uvicorn")
+    monkeypatch.setenv("RTL_AGENT_PUBLIC_HOST", "backend.hf.space")
+    monkeypatch.setenv("RTL_AGENT_ALLOWED_ORIGINS", "https://site.vercel.app")
+    monkeypatch.setenv("RTL_AGENT_LIVE_PASSWORD", "test-password-for-invited-visitors")
+    monkeypatch.setenv("RTL_AGENT_RUNS_DIR", str(tmp_path))
+    calls = []
+    monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: calls.append(kwargs))
+    result = runner.invoke(app, ["serve-hosted", "--port", "8124"])
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        {"host": "0.0.0.0", "port": 8124, "access_log": False, "proxy_headers": False, "workers": 1}
+    ]
+    assert "test-password-for-invited-visitors" not in result.output

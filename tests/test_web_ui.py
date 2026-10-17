@@ -14,6 +14,8 @@ PAGE = Path(__file__).parents[1] / "web" / "index.html"
 
 def page_function(source, name):
     start = source.index(f"function {name}(")
+    if source[max(0, start - 6) : start] == "async ":
+        start -= 6
     end = source.index("\n}", start) + 2
     return source[start:end]
 
@@ -197,3 +199,44 @@ console.log(JSON.stringify({firstVisit,skipped,secondVisitScheduled,reopened,
         "seen": "seen",
         "unchanged": True,
     }
+
+
+def test_hosted_requests_send_access_header_to_backend_without_cookies_or_key():
+    result = ui_result(
+        """
+const API_BASE_URL='https://backend.hf.space';
+let liveAccessToken='fixture-access-password',apiHealth={authenticated:true};
+let request;
+async function fetch(url,options){request={url,method:options.method,
+  access:options.headers.get('Authorization'),credentials:options.credentials,
+  body:options.body};return {status:202,ok:true,json:async()=>({run_id:'fixture'})};}
+await apiRequest('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({spec:'An adder.',top:'dut',max_attempts:2})});
+console.log(JSON.stringify(request));
+""",
+        names=("apiRequest",),
+    )
+    assert result == {
+        "url": "https://backend.hf.space/api/run",
+        "method": "POST",
+        "access": "Bearer fixture-access-password",
+        "credentials": "omit",
+        "body": '{"spec":"An adder.","top":"dut","max_attempts":2}',
+    }
+
+
+def test_old_unauthorized_response_cannot_clear_new_live_access():
+    result = ui_result(
+        """
+const API_BASE_URL='https://backend.hf.space';
+let liveAccessToken='old-password',apiHealth={authenticated:true},deliver;
+function fetch(){return new Promise(resolve=>deliver=resolve);}
+const pending=apiRequest('/api/health');
+liveAccessToken='new-password';
+deliver({status:401,ok:false,json:async()=>({detail:'Access locked.'})});
+try{await pending;}catch{}
+console.log(JSON.stringify({access:liveAccessToken,authenticated:apiHealth.authenticated}));
+""",
+        names=("apiRequest",),
+    )
+    assert result == {"access": "new-password", "authenticated": True}

@@ -7,9 +7,16 @@ tools check it. The website has two modes:
   These use scripted RTL candidates and real saved tool results. No API key or
   installed EDA tools are needed for Replay.
 - **Live**: submit an editable specification to OpenAI, then run Verilator, Icarus
-  and Yosys on your Mac. The browser never receives your API key.
+  and Yosys locally or on the hosted backend. The browser never receives your API key.
 
-This is a local application. There is no hosting or deployment configuration.
+Local development remains the default. An optional hosted mode connects a Vercel
+frontend to a Docker backend, with a separate Live access password and run limits.
+See [the hosting guide](docs/hosting.md) for the Vercel + Hugging Face setup.
+Vercel's Git integration and the included, opt-in backend workflow can deploy
+updates from GitHub's `web-ui` branch. GitHub needs only a scoped Space deployment
+token; the OpenAI key and visitor access password stay in Hugging Face Secrets.
+The OpenAI key belongs only in backend secrets; the frontend build reads only a
+public backend URL. `rtl-agent serve` remains localhost-only.
 
 ## Run the website on a Mac
 
@@ -171,6 +178,7 @@ local fixtures and the real tools; they skip if the tools are missing. Server gu
 tests use a mock provider and toolchain and need no OpenAI connection. Without the
 optional web extra, web tests skip and the CLI remains usable.
 
-The frontend is `web/index.html`; root `index.html` redirects to it. No frontend
-build step or external asset service is required. Wheels include the page and the
-five example specs.
+The frontend is `web/index.html`; root `index.html` redirects to it. Local use
+requires no frontend build step or external asset service. Hosted Vercel builds
+use `scripts/build-web.mjs` to add the public backend URL. Wheels include the page
+and the five example specs.

@@ -2,8 +2,17 @@
 
 The maintained page is `web/index.html`; root `index.html` redirects to it.
 Run `rtl-agent serve` after installing `.[web]`. The UI has no build step,
-external font service, browser credentials, hosting or deployment configuration.
+external font service or browser OpenAI credentials.
 See the README for complete macOS setup commands.
+
+For optional Vercel + Docker hosting, see [hosting.md](hosting.md). The frontend
+build embeds only `RTL_AGENT_API_BASE_URL`. `serve-hosted` requires an explicit
+backend host, exact HTTPS website origins and a Live access password; it does not
+relax the local command's guards. Passwords travel in Authorization headers over
+HTTPS and stay in tab memory, not URL parameters or browser storage. Replay stays
+public; all Live runs, waveforms and gallery APIs require access. The Live gallery
+is shared with everyone who has the password. Server limits cap attempts, elapsed
+run time and the shared number of admitted runs per UTC day.
 
 Replay remains the default and animates the five embedded CPU/GPU/NPU examples.
 The candidates are scripted fixtures; their lint, simulation and Yosys evidence
@@ -62,7 +71,7 @@ truncated model summaries. Their text-only layout avoids suggesting that every
 custom block is an ALU. Recorded examples retain their specific illustrations;
 titles and footers wrap, and card heights grow to fit the content.
 
-The service and CLI accept loopback binding only. The app also rejects remote
+The default local service and `serve` command accept loopback binding only. The app rejects remote
 clients, unexpected Host headers and cross-origin requests. Run IDs and resolved
 artifact paths are validated against the runs directory, including symlinks.
 Access logging is disabled, API responses are not cached, and credential values
@@ -134,6 +143,9 @@ caption facts and fallback, and real VCD conversion.
 Browser validation runs the full Replay/Live path against a fixture model provider
 and real Verilator/Icarus/Yosys, including failure/repair, per-attempt VCDs, the real
 fatal timestamp, auto-zoom, raw errors, assumptions, caption attribution, API error
-recovery and responsive layouts. Live OpenAI generation and caption quality, macOS
-Homebrew behavior, and an actual Python 3.11 interpreter require user-side testing;
-this environment runs Linux with Python 3.12.
+recovery and responsive layouts. Hosted validation also covers cross-origin
+password access, shared quotas, real-tool failure/repair and frontend builds
+that exclude server secrets. The full suite passes with network calls blocked
+in Linux Python 3.12 and in the Python 3.11 Docker container. Live OpenAI generation,
+caption quality, macOS Homebrew behavior, account integrations and public cloud
+deployment still require verification after the hosting accounts are configured.
