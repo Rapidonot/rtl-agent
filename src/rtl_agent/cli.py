@@ -118,7 +118,7 @@ def generate(
         "runs"
     ),
 ) -> None:
-    """Generate a design and fixed testbench, then repair only RTL until checks pass."""
+    """Generate a fixed testbench, then RTL; repair only RTL until checks pass."""
     if (spec is None) == (spec_file is None):
         raise typer.BadParameter("Provide either SPEC or --spec-file, exactly one.")
     if model is None:

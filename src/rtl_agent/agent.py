@@ -124,25 +124,29 @@ class RTLAgent:
         _save(report)
         try:
             if testbench is None:
-                self.emit("Generating RTL and a self-checking testbench…")
-                draft = self.provider.generate(spec, self.config.top)
-            else:
-                self.emit("Generating RTL for the supplied testbench…")
-                draft = self.provider.generate(spec, self.config.top, testbench)
-                draft.testbench = testbench
-            (directory / "draft.json").write_text(
-                draft.model_dump_json(indent=2) + "\n", encoding="utf-8"
-            )
-            report.summary = draft.summary
-            report.assumptions = draft.assumptions
-            tb_problems = validate_source(draft.testbench, top=self.config.top, is_testbench=True)
+                self.emit("Generating a testbench from the specification before RTL…")
+                tb_draft = self.provider.generate_testbench(spec, self.config.top)
+                (directory / "testbench.json").write_text(
+                    tb_draft.model_dump_json(indent=2) + "\n", encoding="utf-8"
+                )
+                report.assumptions = tb_draft.assumptions
+                testbench = tb_draft.testbench
+            tb_problems = validate_source(testbench, top=self.config.top, is_testbench=True)
             if tb_problems:
                 raise ValueError("Initial testbench rejected: " + " ".join(tb_problems))
-            testbench_bytes = draft.testbench.encode("utf-8")
+            testbench_bytes = testbench.encode("utf-8")
             (directory / "tb.sv").write_bytes(testbench_bytes)
             testbench_hash = digest(testbench_bytes)
             report.testbench_sha256 = testbench_hash
             self.emit(f"Testbench fixed for this run (SHA-256 {testbench_hash[:12]}…).")
+            _save(report)
+            self.emit("Generating RTL for the fixed testbench…")
+            draft = self.provider.generate(spec, self.config.top, testbench)
+            (directory / "draft.json").write_text(
+                draft.model_dump_json(indent=2) + "\n", encoding="utf-8"
+            )
+            report.summary = draft.summary
+            report.assumptions = list(dict.fromkeys([*report.assumptions, *draft.assumptions]))
             rtl = draft.rtl
             change_summary = "Initial generation."
             for number in range(1, self.config.max_attempts + 1):
@@ -199,9 +203,7 @@ class RTLAgent:
                     break
                 if number < self.config.max_attempts:
                     self.emit("Sending diagnostics to the model for an RTL-only repair…")
-                    repair = self.provider.repair(
-                        spec, self.config.top, rtl, draft.testbench, attempt
-                    )
+                    repair = self.provider.repair(spec, self.config.top, rtl, testbench, attempt)
                     (attempt_dir / "repair.json").write_text(
                         repair.model_dump_json(indent=2) + "\n", encoding="utf-8"
                     )

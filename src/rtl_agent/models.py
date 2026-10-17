@@ -16,7 +16,8 @@ class RTLDesign(StrictModel):
     rtl: str
 
 
-class DesignDraft(RTLDesign):
+class TestbenchDraft(StrictModel):
+    assumptions: list[str]
     testbench: str
 
 

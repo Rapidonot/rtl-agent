@@ -1,10 +1,13 @@
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 from openai import OpenAI
 
-from rtl_agent.models import Attempt, DesignDraft, RTLRepair
+from rtl_agent import RTLAgent, RunConfig
+from rtl_agent.models import Attempt, RTLDesign, RTLRepair
+from rtl_agent.models import TestbenchDraft as BenchDraft
 from rtl_agent.providers import OpenAIProvider, ProviderError
 
 
@@ -49,33 +52,37 @@ def make_provider():
         client.close()
 
 
-def test_live_sdk_generation_serialization_and_pydantic_parsing(make_provider, design):
+def test_sdk_testbench_and_rtl_use_separate_stateless_requests(make_provider, design):
+    requests = []
+
     def handler(request):
         body = json.loads(request.content)
+        requests.append(body)
         assert request.url.path == "/v1/responses"
         assert body["store"] is False
         assert body["text"]["format"]["strict"] is True
-        assert set(body["text"]["format"]["schema"]["properties"]) == {
-            "rtl",
-            "testbench",
-            "summary",
-            "assumptions",
-        }
-        return httpx.Response(
-            200,
-            json=response_body(
-                {
-                    "summary": "NPU MAC",
-                    "assumptions": [],
-                    "rtl": design.rtl,
-                    "testbench": design.testbench,
-                }
-            ),
-        )
+        assert "previous_response_id" not in body and "conversation" not in body
+        assert [message["role"] for message in body["input"]] == ["system", "user"]
+        properties = set(body["text"]["format"]["schema"]["properties"])
+        prompt = body["input"][1]["content"]
+        if len(requests) == 1:
+            assert properties == {"assumptions", "testbench"}
+            assert design.rtl not in prompt and design.testbench not in prompt
+            assert "independent behavioral reference model" in prompt
+            payload = {"assumptions": [], "testbench": design.testbench}
+        else:
+            assert properties == {"summary", "assumptions", "rtl"}
+            assert design.testbench in prompt
+            payload = {"summary": design.summary, "assumptions": [], "rtl": design.rtl}
+        return httpx.Response(200, json=response_body(payload))
 
-    result = make_provider(handler).generate("NPU MAC", "npu_neural_mac")
-    assert isinstance(result, DesignDraft)
+    provider = make_provider(handler)
+    bench = provider.generate_testbench("NPU MAC", "npu_neural_mac")
+    assert isinstance(bench, BenchDraft)
+    result = provider.generate("NPU MAC", "npu_neural_mac", bench.testbench)
+    assert isinstance(result, RTLDesign)
     assert result.rtl == design.rtl
+    assert len(requests) == 2
 
 
 def test_supplied_testbench_generation_requests_only_rtl(make_provider, design):
@@ -96,7 +103,53 @@ def test_supplied_testbench_generation_requests_only_rtl(make_provider, design):
         )
 
     result = make_provider(handler).generate("NPU MAC", "npu_neural_mac", design.testbench)
-    assert result.testbench == design.testbench
+    assert isinstance(result, RTLDesign)
+    assert result.rtl == design.rtl
+
+
+@pytest.mark.eda
+def test_separate_sdk_calls_and_rtl_repair_with_real_eda(
+    make_provider, design, tmp_path, eda_tools
+):
+    calls = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        properties = set(body["text"]["format"]["schema"]["properties"])
+        calls.append(properties)
+        prompt = body["input"][1]["content"]
+        if len(calls) == 1:
+            assert properties == {"assumptions", "testbench"}
+            assert design.rtl not in prompt
+            payload = {
+                "assumptions": ["Accumulator wraps at 20 bits."],
+                "testbench": design.testbench,
+            }
+        else:
+            assert design.testbench in prompt
+            assert next(tmp_path.iterdir()).joinpath("tb.sv").read_text() == design.testbench
+            if len(calls) == 2:
+                assert properties == {"summary", "assumptions", "rtl"}
+                payload = {
+                    "summary": design.summary,
+                    "assumptions": [],
+                    "rtl": design.rtl.replace("acc +", "acc -"),
+                }
+            else:
+                assert properties == {"change_summary", "rtl"}
+                assert "<waveform_trace>" in prompt and "expected=12 actual=-12" in prompt
+                payload = {"change_summary": "Restore accumulation.", "rtl": design.rtl}
+        return httpx.Response(200, json=response_body(payload))
+
+    report = RTLAgent(
+        make_provider(handler), RunConfig(top="npu_neural_mac", output_dir=tmp_path)
+    ).run("Signed INT8 NPU MAC with synchronous clear and enable.")
+    assert report.passed, report.error
+    assert len(calls) == 3
+    assert [a.passed for a in report.attempts] == [False, True]
+    assert report.assumptions == ["Accumulator wraps at 20 bits."]
+    assert all(a.testbench_sha256 == report.testbench_sha256 for a in report.attempts)
+    assert (Path(report.run_dir) / "tb.sv").read_text() == design.testbench
 
 
 def test_repair_sdk_schema_excludes_testbench_and_receives_diagnostics(make_provider, design):
@@ -144,7 +197,7 @@ def test_api_error_is_actionable_and_does_not_log_response_body(make_provider):
         )
     )
     with pytest.raises(ProviderError) as exc:
-        provider.generate("NPU MAC", "npu_neural_mac")
+        provider.generate_testbench("NPU MAC", "npu_neural_mac")
     assert "HTTP 401" in str(exc.value)
     assert "secret-material" not in str(exc.value)
 
@@ -160,4 +213,4 @@ def test_model_refusal_does_not_produce_artifacts(make_provider):
     body["output"][0]["content"] = [{"type": "refusal", "refusal": "Cannot generate."}]
     provider = make_provider(lambda request: httpx.Response(200, json=body))
     with pytest.raises(ProviderError, match="refused"):
-        provider.generate("NPU MAC", "npu_neural_mac")
+        provider.generate_testbench("NPU MAC", "npu_neural_mac")

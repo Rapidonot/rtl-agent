@@ -78,6 +78,7 @@ def test_tb_file_runs_reference_and_reports_synthesis(
     assert result.exit_code == 0, result.output
     assert "Simulation" in result.output and "Synthesis" in result.output
     provider.generate.assert_called_once_with("NPU MAC", "npu_neural_mac", reference.read_text())
+    provider.generate_testbench.assert_not_called()
     report = load_report(next((tmp_path / "runs").iterdir()))
     assert report.synthesis.flip_flops == 20
     assert report.testbench_sha256
