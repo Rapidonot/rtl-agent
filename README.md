@@ -29,6 +29,11 @@ Open **http://127.0.0.1:8000**. Replay works immediately. Live stays disabled un
 all four binaries (`iverilog`, `vvp`, `verilator`, `yosys`), the key and model are
 available to the server.
 
+A short guided tour opens on your first visit. Its highlights walk through Replay and
+Live, choosing a block, writing a specification, reading waveforms, Yosys results,
+checks and the gallery. Use **Skip** or Escape to leave, or **Quick tour** in the
+header to open it again. The tour does not start a run or change your results.
+
 For Live, stop the server with Ctrl-C and set these in the same terminal. Use an
 actual model ID available to your OpenAI account; no model name is guessed.
 In macOS's default zsh, this reads the key without putting it in the command:
@@ -53,6 +58,16 @@ under Run settings, and click **Run design**. The model field displays the serve
 `RTL_AGENT_MODEL`; the browser cannot choose a different model or submit a key.
 Assumptions are displayed beside the specification. Source, the fixed testbench,
 RTL diffs and original logs remain in **View artifacts**.
+
+The **Block gallery** opens on **Your runs**. Completed Live results, including
+failed runs with recorded attempts, appear automatically from the local `runs/`
+folder. They remain available after refreshing the browser or restarting the
+server, even without an API key. Open a card to reload its real source, logs,
+metrics and waveforms. The gallery lists the latest 100 local runs; it does not
+delete older run folders. The bundled demos are under **Examples**. Imported
+reports and optional names saved with **Save result** remain in this browser.
+Generated cards use complete, plain-language descriptions of the requested block
+and a text-only layout. The recorded examples keep their specific illustrations.
 
 The server binds only to a loopback address. For a different local port or run
 budget:

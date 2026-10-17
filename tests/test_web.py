@@ -179,6 +179,96 @@ def test_health_examples_and_frontend_do_not_expose_key(setup_web):
         assert "secret-server-key" not in html.text
 
 
+@pytest.mark.parametrize("attempts,expected", [(1, "failed"), (3, "passed")])
+def test_gallery_lists_actual_local_results_without_source_or_logs(setup_web, attempts, expected):
+    app, provider = setup_web
+    with client_for(app) as client:
+        assert client.get("/api/runs").json() == []
+        run_id = start(client, max_attempts=attempts)
+        finished(client, run_id)
+        response = client.get("/api/runs")
+        assert response.status_code == 200
+        records = response.json()
+        assert len(records) == 1 and records[0]["id"] == run_id
+        assert records[0]["serverRun"] and records[0]["userSaved"]
+        assert records[0]["report"]["status"] == expected
+        for attempt in records[0]["report"]["attempts"]:
+            assert set(attempt) == {"number", "status", "synthesis"}
+        assert "secret-server-key" not in response.text
+        assert "rtl" not in records[0]["report"] and "log" not in records[0]["report"]
+        provider.generate_testbench.assert_called_once()
+
+
+def test_gallery_description_is_complete_and_does_not_repeat_raw_model_prose(setup_web, design):
+    app, _ = setup_web
+    design.summary = "Implemented npu_neural_mac with cpu_alu8 and RTL code. " * 20
+    with client_for(app) as client:
+        run_id = start(client, spec="Design a signed INT8 multiply-accumulate block.")
+        report = finished(client, run_id)
+        record = client.get("/api/runs").json()[0]
+        expected = "Multiplies two inputs and adds each result to a running total."
+        assert record["description"] == expected
+        assert record["report"]["description"] == report["description"] == expected
+        assert "npu_neural_mac" not in record["description"]
+
+
+def test_gallery_and_artifacts_survive_restart_without_a_key(setup_web, monkeypatch):
+    app, provider = setup_web
+    with client_for(app) as client:
+        run_id = start(client)
+        before = finished(client, run_id)
+    monkeypatch.delenv("OPENAI_API_KEY")
+    restarted = create_app(runs_dir=app.state.manager.root)
+    with client_for(restarted) as client:
+        assert not client.get("/api/health").json()["live_available"]
+        records = client.get("/api/runs").json()
+        assert records[0]["id"] == run_id
+        restored = client.get(f"/api/run/{run_id}").json()
+        assert restored["status"] == before["status"] == "passed"
+        assert restored["attempts"][-1]["rtl"] == before["attempts"][-1]["rtl"]
+        wave = client.get(f"/api/run/{run_id}/attempts/2/waveform").json()
+        assert wave["duration_ns"] == 10
+    provider.generate.assert_called_once()
+
+
+def test_gallery_skips_broken_reports_and_symlinks_outside_runs(setup_web, tmp_path):
+    app, _ = setup_web
+    with client_for(app) as client:
+        run_id = start(client)
+        finished(client, run_id)
+        broken = app.state.manager.root / "20260101T000000Z-11111111"
+        broken.mkdir()
+        (broken / "report.json").write_text("not valid json")
+        private = tmp_path / "outside"
+        private.mkdir()
+        (private / "report.json").write_text('{"private": "never-show-this"}')
+        (app.state.manager.root / "20260101T000000Z-22222222").symlink_to(private)
+        response = client.get("/api/runs")
+        assert [r["id"] for r in response.json()] == [run_id]
+        assert "never-show-this" not in response.text
+
+
+def test_gallery_does_not_save_a_failed_attempt_before_the_live_run_finishes(setup_web):
+    app, provider = setup_web
+    hold, reached = threading.Event(), threading.Event()
+
+    def repair(*_):
+        reached.set()
+        hold.wait(2)
+        return provider.repair.return_value
+
+    provider.repair.side_effect = repair
+    with client_for(app) as client:
+        try:
+            run_id = start(client)
+            assert reached.wait(1)
+            assert client.get("/api/runs").json() == []
+        finally:
+            hold.set()
+        finished(client, run_id)
+        assert client.get("/api/runs").json()[0]["report"]["status"] == "passed"
+
+
 def test_run_returns_early_conflicts_and_completes_with_sources_and_caption(setup_web):
     app, provider = setup_web
     hold = threading.Event()

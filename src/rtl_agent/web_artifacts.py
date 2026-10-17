@@ -19,6 +19,35 @@ EXAMPLES = {
 }
 
 
+def gallery_description(spec: str) -> str:
+    """Describe the requested block, without repeating an unreviewed model summary."""
+    for pattern, description in (
+        (r"population.?count|popcount|bit.?count", "Counts the 1 bits in each input value."),
+        (
+            r"multiply.{0,40}accumulat|\bMAC\b",
+            "Multiplies two inputs and adds each result to a running total.",
+        ),
+        (r"register file", "Stores values in a small register bank for reading and updating."),
+        (
+            r"alpha.?blend|pixel.*blend",
+            "Combines foreground and background pixels using an alpha value.",
+        ),
+        (r"\bSIMD\b", "Applies the same operation across several data lanes at once."),
+        (
+            r"\bALU\b|arithmetic.*logic",
+            "Performs the arithmetic and logic operations in your specification.",
+        ),
+        (r"\bcounter\b", "Counts events according to the rules in your specification."),
+        (r"\badder\b", "Adds input values and produces their sum."),
+    ):
+        if re.search(pattern, spec, re.I):
+            return description
+    return (
+        "A custom circuit built from your specification. "
+        "Open the result to inspect its recorded checks."
+    )
+
+
 def artifact(root: Path, run_id: str, *parts: str) -> Path:
     if not RUN_ID.fullmatch(run_id):
         raise ValueError("Invalid run ID.")
@@ -197,6 +226,7 @@ def ui_report(
         "source": "live",
         "model": report.model,
         "spec": report.spec,
+        "description": gallery_description(report.spec),
         "top": report.top,
         "title": title,
         "category": category,

@@ -4,6 +4,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import threading
 import traceback
 from contextlib import asynccontextmanager
@@ -16,12 +17,20 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from rtl_agent.agent import RTLAgent, _save, load_report
+from rtl_agent.captions import circuit_name
 from rtl_agent.control import RunControl, RunStopped
-from rtl_agent.models import RunConfig
+from rtl_agent.models import RunConfig, RunReport
 from rtl_agent.policy import validate_top
 from rtl_agent.providers import OpenAIProvider, max_output_tokens_from_env
 from rtl_agent.tools import tool_paths
-from rtl_agent.web_artifacts import EXAMPLES, artifact, read_text, ui_report, waveform_with_reason
+from rtl_agent.web_artifacts import (
+    EXAMPLES,
+    artifact,
+    gallery_description,
+    read_text,
+    ui_report,
+    waveform_with_reason,
+)
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
@@ -193,6 +202,75 @@ class RunManager:
         result["worker_active"] = bool(job and job.thread and job.thread.is_alive())
         return result
 
+    def gallery(self) -> list[dict]:
+        """Read completed local runs without loading their source or VCD artifacts."""
+        records = []
+        for directory in sorted(self.root.iterdir(), reverse=True):
+            try:
+                path = artifact(self.root, directory.name, "report.json")
+                text = read_text(path, limit=16 * 1024 * 1024)
+                if text is None:
+                    continue
+                report = RunReport.model_validate_json(text)
+                if report.run_id != directory.name or not report.attempts:
+                    continue
+                # A previous process may have stopped before writing a terminal status.
+                if report.status == "running":
+                    job = self.jobs.get(report.run_id)
+                    if job and job.thread and job.thread.is_alive():
+                        continue
+                    report = report.model_copy(update={"status": "interrupted"})
+                name = circuit_name(report.spec)
+                if name == "circuit":
+                    name = (
+                        re.sub(
+                            r"^(?:please\s+)?(?:design|build|create|implement|make)\s+(?:(?:a|an|the)\s+)?",
+                            "",
+                            report.spec.splitlines()[0].strip(),
+                            flags=re.I,
+                        ).strip(" .`")
+                        or "Custom chip block"
+                    )
+                category, title = "Custom", name[0].upper() + name[1:80]
+                if report.top in EXAMPLES:
+                    reference = read_text(
+                        resource_dir("examples", "example_specs") / f"{report.top}.txt"
+                    )
+                    if reference is not None and reference.strip() == report.spec.strip():
+                        category, title = EXAMPLES[report.top]
+                records.append(
+                    {
+                        "id": report.run_id,
+                        "title": title,
+                        "category": category,
+                        "description": gallery_description(report.spec),
+                        "userSaved": True,
+                        "serverRun": True,
+                        "report": {
+                            "run_id": report.run_id,
+                            "top": report.top,
+                            "model": report.model,
+                            "source": "live",
+                            "status": report.status,
+                            "started_at": report.started_at,
+                            "description": gallery_description(report.spec),
+                            "attempts": [
+                                {
+                                    "number": a.number,
+                                    "status": "passed" if a.passed else "failed",
+                                    "synthesis": a.synthesis.model_dump() if a.synthesis else None,
+                                }
+                                for a in report.attempts
+                            ],
+                        },
+                    }
+                )
+            except (OSError, ValueError, IndexError):
+                continue  # A broken or out-of-root artifact cannot hide valid history.
+            if len(records) == 100:
+                break
+        return sorted(records, key=lambda record: record["report"]["started_at"], reverse=True)
+
 
 def create_app(
     *, runs_dir: Path = Path("runs"), run_timeout: float = 600, provider_factory=None
@@ -261,6 +339,10 @@ def create_app(
             }
             for top, (category, title) in EXAMPLES.items()
         ]
+
+    @app.get("/api/runs")
+    def saved_runs():
+        return manager.gallery()
 
     @app.post("/api/run", status_code=202)
     def start_run(request: RunRequest):

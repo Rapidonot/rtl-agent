@@ -15,14 +15,26 @@ Every result identifies its provenance as **Recorded replay**, **Generated live 
 
 The existing workbench layout, larger specification panel, condensed waveform,
 attempt timings, synthesis explanations and gallery remain. Internal module names
-are kept in artifacts and advanced settings, not titles. The checks bar is larger,
+are kept in artifacts and advanced settings, not titles. The header shows only
+RTL Agent, and the redundant category tag beneath the main title is removed.
+The checks bar is larger,
 with mobile cards; desktop uses the available viewport width.
+
+The first visit opens a seven-step guided tour, with highlights on Replay/Live, the
+block selector, specification, waveform and attempts, Yosys metrics, checks and
+Workbench/Block gallery. It supports Back, Skip, Escape and keyboard navigation;
+**Quick tour** reopens it. Completion or skipping is remembered in this browser.
+The tour restores the previous page and focus, never edits the specification,
+starts a run, selects a different attempt or changes verification evidence.
 
 ## Server and engine contract
 
 - `GET /api/health`: key presence, tool availability, model, output token budget, Live readiness/reason
   and worker busy state. No credential values or environment dump.
 - `GET /api/examples`: the five specifications from `examples/` with readable titles.
+- `GET /api/runs`: metadata for the latest 100 completed local runs with recorded
+  attempts, newest first. Invalid reports and paths outside the runs root are
+  skipped. No source files or VCD samples are embedded in the listing.
 - `POST /api/run {spec, top, max_attempts}`: background worker, immediate run ID;
   custom editable specs accepted; attempt limit clamped to 1–5; 409 if busy.
 - `GET /api/run/{id}`: UI schema version 2, real artifacts and metrics, completed
@@ -36,8 +48,19 @@ with mobile cards; desktop uses the available viewport width.
 `RemoteRunEngine` implements the same `start`, `onEvent` and `cancel` contract as
 `ReplayRunEngine`. It polls about once per second, fetches real per-attempt VCDs,
 rejects stale responses after a mode/run change, and offers Replay on errors.
-A failed waveform request leaves an empty scope without changing the run's result.
+A failed waveform request shows a one-line message without changing the run's result.
 The browser cannot provide an API key, provider, testbench, output path or model ID.
+
+The gallery defaults to **Your runs**; **Examples** holds the five recorded demos.
+Live results enter the gallery automatically when the run finishes. History is
+read from local run folders after browser refresh or server restart and requires
+no API key. Opening a card fetches the original report and real per-attempt VCDs.
+Browser imports and manually chosen names remain supported, with records deduped
+by run ID. A gallery display or loading error cannot change verification results.
+Generated cards use concise descriptions of the requested block, rather than
+truncated model summaries. Their text-only layout avoids suggesting that every
+custom block is an ALU. Recorded examples retain their specific illustrations;
+titles and footers wrap, and card heights grow to fit the content.
 
 The service and CLI accept loopback binding only. The app also rejects remote
 clients, unexpected Host headers and cross-origin requests. Run IDs and resolved
