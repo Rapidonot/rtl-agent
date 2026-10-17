@@ -11,7 +11,7 @@ from rich.text import Text
 
 from rtl_agent.agent import RTLAgent, load_report
 from rtl_agent.models import RunConfig, RunReport
-from rtl_agent.providers import OpenAIProvider, ProviderError
+from rtl_agent.providers import OpenAIProvider, ProviderError, max_output_tokens_from_env
 from rtl_agent.tools import MissingToolError, run_command, tool_paths
 
 app = typer.Typer(
@@ -84,9 +84,17 @@ def doctor() -> None:
     table.add_row(
         "RTL_AGENT_MODEL", Text(os.environ.get("RTL_AGENT_MODEL") or "not set; use --model")
     )
+    invalid_tokens = False
+    try:
+        token_status = f"{max_output_tokens_from_env()} (web)"
+    except ValueError as exc:
+        invalid_tokens = True
+        token_status = str(exc)
+    table.add_row("RTL_AGENT_MAX_OUTPUT_TOKENS", Text(token_status))
     console.print(table)
     if any(path is None for path in paths.values()):
         console.print("macOS: brew install icarus-verilog verilator yosys")
+    if invalid_tokens or any(path is None for path in paths.values()):
         raise typer.Exit(2)
 
 
@@ -118,7 +126,7 @@ def generate(
         "runs"
     ),
 ) -> None:
-    """Generate a fixed testbench, then RTL; repair only RTL until checks pass."""
+    """Generate a design and fixed testbench, then repair only RTL until checks pass."""
     if (spec is None) == (spec_file is None):
         raise typer.BadParameter("Provide either SPEC or --spec-file, exactly one.")
     if model is None:
@@ -152,3 +160,29 @@ def inspect(path: Annotated[Path, typer.Argument(help="Run folder or report.json
     except (OSError, ValueError) as exc:
         console.print(Text(str(exc), style="red"))
         raise typer.Exit(2) from exc
+
+
+@app.command()
+def serve(
+    host: Annotated[str, typer.Option(help="Loopback only.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(min=1, max=65535)] = 8000,
+    run_timeout: Annotated[float, typer.Option(min=1, max=1800)] = 600,
+) -> None:
+    """Run the local Replay/Live website; credentials stay in this terminal."""
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise typer.BadParameter("The web server may bind only to localhost.")
+    try:
+        import uvicorn
+
+        from rtl_agent.web import create_app
+    except ImportError as exc:
+        console.print("Install the web extra: python -m pip install -e '.[web]'")
+        raise typer.Exit(2) from exc
+    console.print(f"Open http://{'[::1]' if host == '::1' else host}:{port}")
+    uvicorn.run(
+        create_app(run_timeout=run_timeout),
+        host=host,
+        port=port,
+        access_log=False,
+        proxy_headers=False,
+    )

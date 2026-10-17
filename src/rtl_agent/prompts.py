@@ -22,49 +22,45 @@ clear and avoid inferred latches. Combinational helper modules are allowed.
 """
 
 
-def testbench_prompt(spec: str, top: str) -> str:
-    return f"""Write a self-checking SystemVerilog testbench from this specification alone:
-<specification>
-{spec}
-</specification>
-
-No RTL implementation exists yet. Return assumptions and testbench only; do not
-draft RTL. Instantiate top module {top} in testbench top tb. Preserve the specified
-ports, parameters and timing. If unspecified, choose a contract and record it in
-assumptions AND testbench comments so the later RTL call can follow it exactly.
-
-Compute expected outputs using an independent behavioral reference model inside
-the testbench (a function, task or scoreboard derived from the specification).
-Keep reference arithmetic explicitly sized and signed; account for saturation,
-overflow, reset priority, enable/hold behavior and pipeline latency where relevant.
-Never read DUT internals or derive expected values from DUT outputs. Exercise
-nominal behavior, reset, boundary conditions and sequential timing. Test all
-important outputs with if (...) $fatal(1, "...") checks (include expected/actual/time).
-Drive synchronous inputs on the falling edge; check after the rising edge with
-a #1 delay to avoid races with nonblocking assignments.
-Include an independent simulation watchdog using $fatal on timeout. Always dump
-waves with exactly $dumpfile("waves.vcd"); $dumpvars(0, tb).
-Only after ALL checks pass, print exactly $display("{PASS_MARKER}"); then $finish.
-No $stop, $system, external file IO, or nonstandard assertions. Raw source strings,
-no Markdown fences. This testbench will be fixed before RTL generation and will
-remain unchanged during repairs. Make these tests thorough and correct.
-"""
-
-
 def generation_prompt(spec: str, top: str, testbench: str) -> str:
     return f"""Build the circuit described by this specification:
 <specification>
 {spec}
 </specification>
 
-The RTL top module must be named {top}. This testbench was fixed before RTL generation:
+The RTL top module must be named {top}. The separate testbench top is tb.
+The fixed testbench was written from the specification in a separate step:
 <fixed_testbench>
 {testbench}
 </fixed_testbench>
 Return summary, assumptions, and rtl only. Implement the specified behavior and
 the exact interface and timing exercised by this testbench. Do not return or change
-the testbench, suppress warnings, or reference testbench internals. Raw source,
-no Markdown fences. Every repair may modify ONLY the RTL.
+the testbench, suppress warnings, or reference testbench internals.
+"""
+
+
+def testbench_prompt(spec: str, top: str) -> str:
+    return f"""Write a self-checking SystemVerilog testbench from this specification alone:
+<specification>
+{spec}
+</specification>
+
+The circuit top module is {top}. The testbench top must be tb.
+No RTL implementation is available in this step. Do not generate RTL.
+Begin the testbench source with `timescale 1ns/1ps.
+Return assumptions and testbench only. Preserve the specified interface
+or choose and document one when it is unspecified. Record ambiguities as assumptions.
+The testbench must independently compute expected values from the specification,
+exercise reset, nominal behavior, boundary conditions and sequential timing, and
+use explicit if (...) $fatal(1, "...") checks (include expected/actual/time).
+Drive synchronous inputs on the falling edge; check after the rising edge with
+a #1 delay to avoid races with nonblocking assignments. Test all important outputs.
+Include an independent simulation watchdog using $fatal on timeout. Always dump
+waves with exactly $dumpfile("waves.vcd"); $dumpvars(0, tb).
+Only after ALL checks pass, print exactly $display("{PASS_MARKER}"); then $finish.
+No $stop, $system, external file IO, or nonstandard assertions. Raw source strings,
+no Markdown fences. The testbench stays fixed for this run after this response;
+every repair may modify ONLY the RTL. Make the initial tests thorough and correct.
 """
 
 

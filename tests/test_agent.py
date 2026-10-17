@@ -5,8 +5,6 @@ from pathlib import Path
 import pytest
 
 from rtl_agent.agent import load_report
-from rtl_agent.models import RTLDesign
-from rtl_agent.models import TestbenchDraft as BenchDraft
 from rtl_agent.providers import ProviderError
 
 SPEC = "Signed INT8 NPU MAC with synchronous clear and enable."
@@ -50,6 +48,25 @@ def test_functional_failure_repairs_rtl_without_changing_testbench(make_agent, d
         assert path.read_bytes() == design.testbench.encode()
         assert hashlib.sha256(path.read_bytes()).hexdigest() == report.testbench_sha256
     assert all(a.testbench_sha256 == report.testbench_sha256 for a in report.attempts)
+
+
+def test_default_timescale_is_fixed_before_real_verification_and_every_repair(
+    make_agent, design, provider
+):
+    from rtl_agent.web_artifacts import waveform
+
+    design.testbench = design.testbench.replace("`timescale 1ns/1ps\n", "")
+    expected = "`timescale 1ns/1ps\n" + design.testbench
+    design.rtl = design.rtl.replace("acc +", "acc -")
+    report = make_agent().run(SPEC)
+    assert [a.passed for a in report.attempts] == [False, True]
+    assert provider.generate.call_args.args[2] == expected
+    assert provider.repair.call_args.args[3] == expected
+    for path in Path(report.run_dir).rglob("tb.sv"):
+        assert path.read_bytes() == expected.encode()
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == report.testbench_sha256
+    wave = waveform(Path(report.run_dir) / "attempts/02/waves.vcd")
+    assert wave is not None and wave["timescale"] == "1ps"
 
 
 def test_attempt_budget_is_total_candidates(make_agent, design, provider):
@@ -133,47 +150,6 @@ def test_invalid_supplied_testbench_is_rejected_before_api(make_agent, provider)
         make_agent().run(SPEC, testbench="module tb; endmodule")
     provider.generate.assert_not_called()
     provider.generate_testbench.assert_not_called()
-
-
-def test_testbench_is_saved_and_hashed_before_rtl_generation(
-    make_agent, provider, design, tmp_path
-):
-    design.assumptions = ["16-bit product, sign-extended to a 20-bit accumulator."]
-    provider.generate_testbench.side_effect = lambda spec, top: BenchDraft(
-        assumptions=design.assumptions, testbench=design.testbench
-    )
-
-    def generate(spec, top, testbench):
-        directory = next(tmp_path.iterdir())
-        assert (directory / "tb.sv").read_text() == testbench == design.testbench
-        assert not (directory / "draft.json").exists()
-        assert not (directory / "attempts").exists()
-        saved = load_report(directory)
-        assert saved.testbench_sha256 == hashlib.sha256(testbench.encode()).hexdigest()
-        return RTLDesign(summary=design.summary, assumptions=[], rtl=design.rtl)
-
-    provider.generate.side_effect = generate
-    report = make_agent().run(SPEC)
-    assert report.passed
-    assert report.assumptions == design.assumptions
-    assert [call[0] for call in provider.mock_calls] == ["generate_testbench", "generate"]
-
-
-def test_rtl_generation_error_preserves_the_fixed_testbench(make_agent, provider, design):
-    provider.generate.side_effect = ProviderError("RTL generation failed")
-    report = make_agent().run(SPEC)
-    assert report.status == "error" and report.attempts == []
-    directory = Path(report.run_dir)
-    assert (directory / "tb.sv").read_text() == design.testbench
-    assert report.testbench_sha256 == hashlib.sha256(design.testbench.encode()).hexdigest()
-    assert (directory / "testbench.json").is_file()
-
-
-def test_testbench_generation_error_prevents_rtl_call(make_agent, provider):
-    provider.generate_testbench.side_effect = ProviderError("Testbench generation failed")
-    report = make_agent().run(SPEC)
-    assert report.status == "error" and report.attempts == []
-    provider.generate.assert_not_called()
 
 
 def test_stage1_reports_remain_readable(make_agent):

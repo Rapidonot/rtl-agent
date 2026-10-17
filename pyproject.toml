@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "rtl-agent"
 version = "0.2.0"
 description = "Generate and verify CPU, GPU, and NPU building blocks with local EDA tools"
+authors = [{name = "deeptanshu raj appasani"}]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -16,13 +17,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "ruff>=0.9,<1"]
+dev = ["pytest>=8,<10", "ruff>=0.9,<1", "httpx>=0.27,<1"]
+web = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
 
 [project.scripts]
 rtl-agent = "rtl_agent.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rtl_agent"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"web" = "rtl_agent/web_assets"
+"examples" = "rtl_agent/example_specs"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

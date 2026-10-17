@@ -1,12 +1,11 @@
 import shutil
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
 from rtl_agent import RTLAgent, RunConfig
-from rtl_agent.models import RTLDesign, RTLRepair
+from rtl_agent.models import DesignDraft, RTLRepair
 from rtl_agent.models import TestbenchDraft as BenchDraft
 from rtl_agent.providers import Provider
 
@@ -22,7 +21,7 @@ def eda_tools():
 
 @pytest.fixture
 def design():
-    return SimpleNamespace(
+    return DesignDraft(
         summary="Signed INT8 NPU MAC.",
         assumptions=[],
         rtl=(FIXTURES / "npu_neural_mac.sv").read_text(),
@@ -34,12 +33,10 @@ def design():
 def provider(design):
     provider = Mock(spec=Provider)
     provider.name, provider.model = "test", "fixture"
-    provider.generate_testbench.side_effect = lambda spec, top: BenchDraft(
-        assumptions=[], testbench=design.testbench
+    provider.generate_testbench.side_effect = lambda *_: BenchDraft(
+        assumptions=design.assumptions, testbench=design.testbench
     )
-    provider.generate.side_effect = lambda spec, top, testbench: RTLDesign(
-        summary=design.summary, assumptions=design.assumptions, rtl=design.rtl
-    )
+    provider.generate.return_value = design
     provider.repair.return_value = RTLRepair(change_summary="Fix RTL defect.", rtl=design.rtl)
     return provider
 

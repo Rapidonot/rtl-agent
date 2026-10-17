@@ -1,0 +1,116 @@
+# Local web interface
+
+The maintained page is `web/index.html`; root `index.html` redirects to it.
+Run `rtl-agent serve` after installing `.[web]`. The UI has no build step,
+external font service, browser credentials, hosting or deployment configuration.
+See the README for complete macOS setup commands.
+
+Replay remains the default and animates the five embedded CPU/GPU/NPU examples.
+The candidates are scripted fixtures; their lint, simulation and Yosys evidence
+was actually recorded with local tools. Replay makes no API or EDA calls.
+Live is enabled only when `/api/health` reports the key, model and tools ready,
+with a valid `RTL_AGENT_MAX_OUTPUT_TOKENS` budget (default 12000, range 1024–65536).
+Every result identifies its provenance as **Recorded replay**, **Generated live by
+<model>**, or **Imported report**.
+
+The existing workbench layout, larger specification panel, condensed waveform,
+attempt timings, synthesis explanations and gallery remain. Internal module names
+are kept in artifacts and advanced settings, not titles. The checks bar is larger,
+with mobile cards; desktop uses the available viewport width.
+
+## Server and engine contract
+
+- `GET /api/health`: key presence, tool availability, model, output token budget, Live readiness/reason
+  and worker busy state. No credential values or environment dump.
+- `GET /api/examples`: the five specifications from `examples/` with readable titles.
+- `POST /api/run {spec, top, max_attempts}`: background worker, immediate run ID;
+  custom editable specs accepted; attempt limit clamped to 1–5; 409 if busy.
+- `GET /api/run/{id}`: UI schema version 2, real artifacts and metrics, completed
+  attempts plus a clearly running/interrupted partial attempt, assumptions, caption
+  source/pending state and whether the worker remains active.
+- `GET /api/run/{id}/attempts/{n}/waveform`: actual attempt VCD converted to signal
+  samples, including failed attempts; `null` when no usable VCD exists. Add
+  `?explain=true` for `{waveform, reason}` with the specific display reason.
+- `POST /api/run/{id}/cancel`: cooperative cancellation; partial results retained.
+
+`RemoteRunEngine` implements the same `start`, `onEvent` and `cancel` contract as
+`ReplayRunEngine`. It polls about once per second, fetches real per-attempt VCDs,
+rejects stale responses after a mode/run change, and offers Replay on errors.
+A failed waveform request leaves an empty scope without changing the run's result.
+The browser cannot provide an API key, provider, testbench, output path or model ID.
+
+The service and CLI accept loopback binding only. The app also rejects remote
+clients, unexpected Host headers and cross-origin requests. Run IDs and resolved
+artifact paths are validated against the runs directory, including symlinks.
+Access logging is disabled, API responses are not cached, and credential values
+are redacted from error responses. EDA commands retain the existing credential-free
+environment behavior.
+
+A shared run deadline bounds model requests and EDA command timeouts. Cancellation
+is checked between operations; it does not forcibly kill a Python thread. A timed
+out or cancelled operation keeps the single-run slot until its worker exits.
+Reports are replaced atomically after each completed stage and attempt. An
+unfinished run from a previous server process is displayed as interrupted.
+
+## Evidence and captions
+
+The verification order, exact simulation success-marker rule, all-four-stage pass
+predicate and latch rejection remain unchanged. The testbench is generated from
+the spec in its own model call, validated and hash-locked before RTL generation.
+Its bytes stay fixed throughout repairs. Source policy rejects external file/system
+tasks and includes in both sources; every testbench dumpfile must be "waves.vcd".
+Before locking, a missing testbench timing directive gets `` `timescale 1ns/1ps ``;
+existing explicit directives remain byte-for-byte intact.
+Stage observers report progress; they cannot establish a pass.
+No mutation testing, comparison mode or testbench badge was added.
+
+Waveforms preserve VCD timescale, aliases, wide buses, transitions and unknowns.
+The display parser is bounded to 32 MiB, 64 signals and 100,000 changes and labels
+subsets partial. Missing metadata or samples are not reconstructed. Failure time
+comes from simulator output with explicit units or the VCD timescale. Unknown time
+gets no marker; a known failure automatically focuses and zooms its real trace.
+The guide below the scope explains wires over time and the failure marker.
+Missing or rejected waveforms collapse to a one-line message and a reason tooltip.
+Valid finite time ranges are displayed without a fixed nanosecond-duration cap.
+
+The generated assumptions are visible in the specification panel. Each attempt
+button says **checks took** and sums tool durations, excluding model generation.
+**View artifacts**, **View raw error** and **Inspect Yosys evidence** retain the
+original source, locked testbench, RTL diff and exact tool outputs. Generic Yosys
+counts and logic depth describe structure, not silicon area or operating speed.
+
+Captions are opt-in on `RTLAgent`; the CLI leaves them disabled and makes no
+caption API call or deterministic fallback. The server opts in and invokes
+`Provider.caption` once after a passed/failed loop, with the same model and an
+explicit whitelist: spec, first failed diagnostics, next change summary, failed
+attempt number, total attempts, failure kind, final status, and later-attempt pass.
+The prompt requests two short sentences readable by a 14-year-old, bans technical
+jargon, separates the earlier failure from the outcome, and treats fact strings
+as untrusted data. Failure kind is computed conservatively from recorded evidence;
+only known housekeeping warnings are called formatting slips. Invalid sentence
+counts and jargon fall back to the deterministic caption.
+A deterministic diagnostic caption is published immediately. The model explanation
+is optional, asynchronous and capped by a ten-second supervisor; errors, refusals,
+invalid responses or late completion retain the fallback. Captions never change
+verification fields. **AI-written** appears only for model output.
+
+The run explanation is shown with the first failed attempt, or first passing
+attempt if there was no failure. Other selections get their own deterministic
+check summary, so a passing waveform is not described as the earlier failure.
+The original error stays one click away. Prompt guardrails cannot guarantee model
+truthfulness; the raw evidence remains the reference.
+
+## Validation
+
+Pytest uses mocked providers and mocked SDK transports; no OpenAI access is
+required. Existing EDA integration tests use the real tools. New tests cover API
+endpoints, request validation, one worker at a time, early run IDs, stage snapshots,
+path/symlink traversal, localhost/origin guards, key redaction, timeout/cancellation,
+caption facts and fallback, and real VCD conversion.
+
+Browser validation runs the full Replay/Live path against a fixture model provider
+and real Verilator/Icarus/Yosys, including failure/repair, per-attempt VCDs, the real
+fatal timestamp, auto-zoom, raw errors, assumptions, caption attribution, API error
+recovery and responsive layouts. Live OpenAI generation and caption quality, macOS
+Homebrew behavior, and an actual Python 3.11 interpreter require user-side testing;
+this environment runs Linux with Python 3.12.

@@ -2,12 +2,17 @@
 
 import hashlib
 import json
+import os
+import re
 import shutil
+import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from rtl_agent.captions import caption_facts, fallback_caption, start_caption
+from rtl_agent.control import RunControl, RunStopped
 from rtl_agent.models import Attempt, Diagnostic, RunConfig, RunReport
 from rtl_agent.policy import validate_source, validate_top
 from rtl_agent.providers import Provider, ProviderError
@@ -22,11 +27,30 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def ensure_testbench_timescale(source: str) -> str:
+    # Comments and quoted text cannot supply an active timing directive.
+    code = re.sub(r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"', " ", source)
+    if re.search(r"`timescale\b", code):
+        return source
+    return "`timescale 1ns/1ps\n" + source
+
+
+def _atomic_text(path: Path, text: str) -> None:
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, delete=False
+    ) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(text)
+            stream.flush()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
 def _save(report: RunReport) -> None:
     directory = Path(report.run_dir)
-    (directory / "report.json").write_text(
-        report.model_dump_json(indent=2) + "\n", encoding="utf-8"
-    )
+    _atomic_text(directory / "report.json", report.model_dump_json(indent=2) + "\n")
     lines = [
         "# RTL Agent run",
         "",
@@ -73,6 +97,8 @@ def _save(report: RunReport) -> None:
         )
     if report.error:
         lines.extend(["", "## Stopped", "", report.error])
+    if report.caption:
+        lines.extend(["", f"## Explanation ({report.caption_source})", "", report.caption])
     lines.extend(
         [
             "",
@@ -82,7 +108,7 @@ def _save(report: RunReport) -> None:
             "",
         ]
     )
-    (directory / "report.md").write_text("\n".join(lines), encoding="utf-8")
+    _atomic_text(directory / "report.md", "\n".join(lines))
 
 
 class RTLAgent:
@@ -91,14 +117,26 @@ class RTLAgent:
         provider: Provider,
         config: RunConfig | None = None,
         on_event: Callable[[str], None] | None = None,
+        control: RunControl | None = None,
+        captions: bool = False,
     ):
         self.provider = provider
         self.config = config or RunConfig()
         validate_top(self.config.top)
         self.toolchain = EDAToolchain(self.config)
         self.emit = on_event or (lambda message: None)
+        self.control = control
+        self.captions = captions
+        if control is not None:
+            self.toolchain.command_timeout = lambda: control.remaining(self.config.timeout_seconds)
 
-    def run(self, spec: str, testbench: str | None = None) -> RunReport:
+    def run(
+        self,
+        spec: str,
+        testbench: str | None = None,
+        *,
+        on_created: Callable[[RunReport], None] | None = None,
+    ) -> RunReport:
         if not spec.strip() or len(spec.encode("utf-8")) > 65536:
             raise ValueError("Specification must contain 1–65536 UTF-8 bytes.")
         if testbench is not None:
@@ -122,15 +160,24 @@ class RTLAgent:
             self.config.model_dump_json(indent=2) + "\n", encoding="utf-8"
         )
         _save(report)
+        if on_created:
+            on_created(report)
         try:
+            if self.control:
+                self.control.check()
             if testbench is None:
-                self.emit("Generating a testbench from the specification before RTL…")
-                tb_draft = self.provider.generate_testbench(spec, self.config.top)
+                self.emit("Generating a self-checking testbench from the specification…")
+                reference = self.provider.generate_testbench(spec, self.config.top)
+                testbench = ensure_testbench_timescale(reference.testbench)
+                reference = reference.model_copy(update={"testbench": testbench})
+                report.assumptions = list(dict.fromkeys(reference.assumptions))
                 (directory / "testbench.json").write_text(
-                    tb_draft.model_dump_json(indent=2) + "\n", encoding="utf-8"
+                    reference.model_dump_json(indent=2) + "\n", encoding="utf-8"
                 )
-                report.assumptions = tb_draft.assumptions
-                testbench = tb_draft.testbench
+            else:
+                testbench = ensure_testbench_timescale(testbench)
+            if self.control:
+                self.control.check()
             tb_problems = validate_source(testbench, top=self.config.top, is_testbench=True)
             if tb_problems:
                 raise ValueError("Initial testbench rejected: " + " ".join(tb_problems))
@@ -142,6 +189,9 @@ class RTLAgent:
             _save(report)
             self.emit("Generating RTL for the fixed testbench…")
             draft = self.provider.generate(spec, self.config.top, testbench)
+            draft.testbench = testbench
+            if self.control:
+                self.control.check()
             (directory / "draft.json").write_text(
                 draft.model_dump_json(indent=2) + "\n", encoding="utf-8"
             )
@@ -168,6 +218,42 @@ class RTLAgent:
                 tools = []
                 synthesis = None
                 waveform_trace = None
+                progress_tools = []
+
+                def progress(
+                    result,
+                    metrics,
+                    *,
+                    progress_tools=progress_tools,
+                    number=number,
+                    rtl=rtl,
+                    change_summary=change_summary,
+                ):
+                    progress_tools.append(result)
+                    report.current_attempt = Attempt(
+                        number=number,
+                        rtl_sha256=digest(rtl.encode("utf-8")),
+                        testbench_sha256=testbench_hash,
+                        change_summary=change_summary,
+                        passed=False,
+                        tools=list(progress_tools),
+                        synthesis=metrics,
+                    )
+                    _save(report)
+                    if self.control:
+                        self.control.check()
+
+                report.current_attempt = Attempt(
+                    number=number,
+                    rtl_sha256=digest(rtl.encode("utf-8")),
+                    testbench_sha256=testbench_hash,
+                    change_summary=change_summary,
+                    passed=False,
+                    tools=[],
+                    diagnostics=diagnostics,
+                )
+                _save(report)
+                self.toolchain.on_result = progress
                 if not policy_problems:
                     tools, synthesis = self.toolchain.verify(attempt_dir, rtl_path, tb_copy)
                     if any(t.stage == "simulate" and not t.passed for t in tools):
@@ -188,6 +274,7 @@ class RTLAgent:
                     waveform_trace=waveform_trace,
                 )
                 report.attempts.append(attempt)
+                report.current_attempt = None
                 (attempt_dir / "attempt.json").write_text(
                     attempt.model_dump_json(indent=2) + "\n", encoding="utf-8"
                 )
@@ -203,7 +290,13 @@ class RTLAgent:
                     break
                 if number < self.config.max_attempts:
                     self.emit("Sending diagnostics to the model for an RTL-only repair…")
-                    repair = self.provider.repair(spec, self.config.top, rtl, testbench, attempt)
+                    if self.control:
+                        self.control.check()
+                    repair = self.provider.repair(
+                        spec, self.config.top, rtl, draft.testbench, attempt
+                    )
+                    if self.control:
+                        self.control.check()
                     (attempt_dir / "repair.json").write_text(
                         repair.model_dump_json(indent=2) + "\n", encoding="utf-8"
                     )
@@ -213,15 +306,32 @@ class RTLAgent:
                 report.error = (
                     "Attempt budget exhausted. Inspect the saved diagnostics and testbench."
                 )
+        except RunStopped as exc:
+            report.status = "interrupted"
+            report.error = str(exc)
         except KeyboardInterrupt:
             report.status = "interrupted"
             report.error = "Interrupted by user. Partial artifacts have been preserved."
         except (ProviderError, OSError, ValueError, RuntimeError) as exc:
             report.status = "error"
-            report.error = str(exc)
+            message = str(exc)
+            key = os.environ.get("OPENAI_API_KEY", "")
+            report.error = message.replace(key, "[redacted]") if key else message
         finally:
+            self.toolchain.on_result = None
+            if self.control:
+                try:
+                    self.control.check()
+                except RunStopped as exc:
+                    report.status, report.error = "interrupted", str(exc)
             report.finished_at = utc_now()
+            if self.captions and report.status in ("passed", "failed"):
+                report.caption = fallback_caption(caption_facts(report))
+                report.caption_source = "deterministic"
+                report.caption_pending = True
             _save(report)
+        if self.captions and report.status in ("passed", "failed"):
+            start_caption(self.provider, report, _save)
         return report
 
 

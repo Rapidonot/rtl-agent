@@ -24,6 +24,14 @@ def validate_source(source: str, *, top: str, is_testbench: bool = False) -> lis
     expected = TB_TOP if is_testbench else top
     if modules.count(expected) != 1:
         problems.append(f"{label} must declare exactly one module named {expected}.")
+    forbidden = re.findall(
+        r"\$(?:system|fopen|fclose|fwrite|fdisplay|fscanf|readmemh|readmemb|writememh|writememb)\b",
+        code,
+    )
+    for task in dict.fromkeys(forbidden):
+        problems.append(f"{label} cannot use {task} (external file or system access).")
+    if re.search(r"`\s*include\b", code):
+        problems.append(f"{label} cannot use `include directives.")
     if not is_testbench:
         if TB_TOP in modules:
             problems.append("RTL must not define the testbench module.")
@@ -38,6 +46,9 @@ def validate_source(source: str, *, top: str, is_testbench: bool = False) -> lis
         uncommented = _LEXEMES.sub(
             lambda m: m[0] if m[0].startswith('"') else " " * len(m[0]), source
         )
+        for task in re.finditer(r"\$dumpfile\b", code):
+            if not re.match(r'\$dumpfile\s*\(\s*"waves\.vcd"\s*\)', uncommented[task.start() :]):
+                problems.append('Testbench $dumpfile argument must be exactly "waves.vcd".')
         checks = [
             (r"\$fatal\s*\(", code, "self-checking $fatal assertions"),
             (

@@ -16,6 +16,10 @@ class RTLDesign(StrictModel):
     rtl: str
 
 
+class DesignDraft(RTLDesign):
+    testbench: str
+
+
 class TestbenchDraft(StrictModel):
     assumptions: list[str]
     testbench: str
@@ -24,6 +28,10 @@ class TestbenchDraft(StrictModel):
 class RTLRepair(StrictModel):
     change_summary: str
     rtl: str
+
+
+class Caption(StrictModel):
+    caption: str = Field(min_length=1, max_length=1600)
 
 
 class RunConfig(StrictModel):
@@ -93,6 +101,10 @@ class RunReport(StrictModel):
     synthesis: SynthesisMetrics | None = None
     error: str | None = None
     run_dir: str
+    current_attempt: Attempt | None = None
+    caption: str | None = None
+    caption_source: Literal["model", "deterministic"] | None = None
+    caption_pending: bool = False
 
     @property
     def passed(self) -> bool:

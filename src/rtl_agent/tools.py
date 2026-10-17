@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import time
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 
 from rtl_agent.models import Diagnostic, RunConfig, SynthesisMetrics, ToolResult
@@ -270,6 +271,8 @@ class EDAToolchain:
     def __init__(self, config: RunConfig):
         self.config = config
         self.paths = require_tools()
+        self.on_result: Callable[[ToolResult, SynthesisMetrics | None], None] | None = None
+        self.command_timeout: Callable[[], float] = lambda: self.config.timeout_seconds
 
     def verify(
         self, directory: Path, rtl: Path, testbench: Path
@@ -312,21 +315,25 @@ class EDAToolchain:
                 command,
                 stage=stage,
                 cwd=directory,
-                timeout=self.config.timeout_seconds,
+                timeout=self.command_timeout(),
                 max_log_bytes=self.config.max_log_bytes,
             )
             (directory / f"{stage}.log").write_text(result.output, encoding="utf-8")
             results.append(result)
+            if self.on_result:
+                self.on_result(result, synthesis)
         if results[-1].passed:
             result = run_command(
                 [self.paths["vvp"], "-N", "simulation.vvp"],
                 stage="simulate",
                 cwd=directory,
-                timeout=self.config.timeout_seconds,
+                timeout=self.command_timeout(),
                 max_log_bytes=self.config.max_log_bytes,
             )
             (directory / "simulate.log").write_text(result.output, encoding="utf-8")
             results.append(result)
+            if self.on_result:
+                self.on_result(result, synthesis)
         if results[-1].stage == "simulate" and results[-1].passed:
             # Keep stdout: -q suppresses stat/ltp. Flatten and stop depth paths at FFs.
             script = (
@@ -338,7 +345,7 @@ class EDAToolchain:
                 [self.paths["yosys"], "-Q", "-T", "-p", script],
                 stage="synth",
                 cwd=directory,
-                timeout=self.config.timeout_seconds,
+                timeout=self.command_timeout(),
                 max_log_bytes=self.config.max_log_bytes,
             )
             if result.passed:
@@ -356,4 +363,6 @@ class EDAToolchain:
                     )
             (directory / "synth.log").write_text(result.output, encoding="utf-8")
             results.append(result)
+            if self.on_result:
+                self.on_result(result, synthesis)
         return results, synthesis

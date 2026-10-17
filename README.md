@@ -1,10 +1,77 @@
 # RTL Agent
 
-RTL Agent uses compiler and simulation feedback to help an LLM fix small hardware designs. The current focus is building blocks used in CPU, GPU and NPU architectures.
+Describe a chip block in words. An AI writes the hardware design, and real local
+tools check it. The website has two modes:
 
-The tool takes a written circuit specification, asks OpenAI for SystemVerilog and a testbench, then runs Verilator and Icarus Verilog locally. If a check fails, it sends the diagnostics back to the model and requests an RTL repair. The testbench stays the same throughout those repairs.
+- **Replay** (the default): inspect and replay the bundled CPU, GPU and NPU results.
+  These use scripted RTL candidates and real saved tool results. No API key or
+  installed EDA tools are needed for Replay.
+- **Live**: submit an editable specification to OpenAI, then run Verilator, Icarus
+  and Yosys on your Mac. The browser never receives your API key.
+
+This is a local application. There is no hosting or deployment configuration.
+
+## Run the website on a Mac
+
+From your checkout, in Terminal:
+
+```sh
+brew install python@3.11 icarus-verilog verilator yosys
+cd /path/to/rtl-agent
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[web]'
+rtl-agent doctor
+rtl-agent serve
+```
+
+Open **http://127.0.0.1:8000**. Replay works immediately. Live stays disabled until
+all four binaries (`iverilog`, `vvp`, `verilator`, `yosys`), the key and model are
+available to the server.
+
+For Live, stop the server with Ctrl-C and set these in the same terminal. Use an
+actual model ID available to your OpenAI account; no model name is guessed.
+In macOS's default zsh, this reads the key without putting it in the command:
+
+```zsh
+read -s 'OPENAI_API_KEY?OpenAI API key: '
+printf '\n'
+export OPENAI_API_KEY
+export RTL_AGENT_MODEL='YOUR_MODEL_ID'
+export RTL_AGENT_MAX_OUTPUT_TOKENS=12000
+rtl-agent doctor
+rtl-agent serve
+```
+
+`RTL_AGENT_MAX_OUTPUT_TOKENS` sets the web output budget for each testbench, RTL,
+and repair request: default **12000**, valid range **1024–65536**.
+`rtl-agent doctor` displays the budget. Invalid values disable Live with an
+explanation. The CLI `generate` command uses `--max-output-tokens` instead.
+
+Choose **Live**, select an example or edit the specification, set the top module
+under Run settings, and click **Run design**. The model field displays the server's
+`RTL_AGENT_MODEL`; the browser cannot choose a different model or submit a key.
+Assumptions are displayed beside the specification. Source, the fixed testbench,
+RTL diffs and original logs remain in **View artifacts**.
+
+The server binds only to a loopback address. For a different local port or run
+budget:
+
+```sh
+rtl-agent serve --port 8001 --run-timeout 600
+```
+
+Web runs allow 1–5 attempts and one active verification worker at a time. The
+wall-clock budget defaults to 600 seconds. Model requests and EDA commands use
+the remaining budget; timeout or Stop prevents further stages or repairs.
+Cancellation is cooperative: an in-flight operation must return or reach its
+request/command timeout before its thread exits. The worker slot remains occupied
+until then, even when the UI already reports the stop. Partial artifacts are kept.
+Restarting the server does not resume unfinished runs.
 
 ## Examples
+
+The five specifications in `examples/` describe individual blocks, not full chips:
 
 - An 8-bit CPU ALU with arithmetic, logic, shifts and status flags.
 - An 8×16-bit register file with a hardwired zero register.
@@ -12,42 +79,83 @@ The tool takes a written circuit specification, asks OpenAI for SystemVerilog an
 - A pipelined pixel alpha-blending unit.
 - A signed INT8 NPU MAC with a 20-bit accumulator.
 
-The specifications are in `examples/`. These are individual blocks (not complete chips).
+## Verification and evidence
 
-## Setup
+Verification behavior is unchanged: a candidate must pass Verilator lint, Icarus
+compilation and simulation, and latch-free Yosys synthesis. Simulation must exit
+successfully and print exactly one standalone `RTL_AGENT_PASS` line. Assertion
+failures, timeouts, truncated logs and inferred latches cannot establish a pass.
+Passing these checks is not a formal correctness proof.
 
-Requires Python 3.11+, Icarus Verilog and Verilator. On macOS:
+Unless a testbench is supplied with `--tb-file`, generation starts with a separate
+model call that receives only the specification and top module name, never RTL.
+That call returns a self-checking testbench and its assumptions. The testbench is
+validated, saved and hash-locked **before** a second call generates RTL against it.
+Assumptions from both calls are merged in order, without duplicates. A supplied
+testbench skips the first call and is validated and locked before RTL generation.
+If a testbench has no timing directive, the agent prepends `` `timescale 1ns/1ps ``
+before saving its hash. Existing explicit timing is preserved; repairs use exactly
+the normalized, locked bytes.
+Repairs replace only RTL; the same testbench bytes are used throughout the run.
 
-```bash
-brew install icarus-verilog verilator
-git clone https://github.com/Rapidonot/rtl-agent.git
-cd rtl-agent
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e '.[dev]'
-rtl-agent doctor
+Runs save source, logs, reports and any VCD under `runs/`. `report.json` is replaced
+atomically at initialization, after every completed tool stage, after each attempt,
+and at completion. Pending stage snapshots are never marked as passed attempts.
+
+The scope uses each attempt's actual `waves.vcd`, including failed simulations.
+It preserves recorded unknown values and timescale, and does not manufacture missing
+samples. The failure marker uses the simulator's explicit fatal timestamp and the
+VCD timescale. Unknown time means no marker. Large traces are bounded for display:
+32 MiB input, 64 signals, 100,000 value changes; any displayed subset is marked
+partial. Full local artifacts remain on disk. Check times sum tool durations and
+exclude model generation time. Yosys counts are circuit structure, not physical
+chip area or measured operating speed.
+An unavailable trace is replaced by a one-line message with its actual reason in
+a tooltip. Recorded traces keep their real time range, including seconds expressed
+in nanoseconds; a display problem never changes a verification result.
+
+After a passed or failed **web** run, the same model is asked once for two
+plain-English sentences. It receives **only** the spec, first failed attempt's
+diagnostics, the next attempt's change summary, the failed attempt number, total
+attempt count, failure category, final status, and whether a later attempt passed.
+The two-sentence explanation uses everyday words, separates the earlier failure
+from the final outcome, and calls formatting-only warnings a formatting slip.
+A deterministic caption is saved immediately; an asynchronous model caption may replace it within
+10 seconds. Failure or timeout keeps the fallback and never changes pass/fail.
+Model prose is labeled **AI-written**; **View raw error** retains the original
+reference. The explanation is shown with the first failed attempt (or first passing
+attempt when no failure exists); selecting another attempt shows its own check
+summary. Captions cannot prove their own accuracy. Captions are opt-in on
+`RTLAgent` (`captions=False` by default); the server enables them. CLI `generate`
+makes no caption API call, saves no fallback caption, and leaves `caption_pending`
+false in `report.json`.
+
+## CLI workflows
+
+The existing workflows remain available:
+
+```sh
+rtl-agent generate --spec-file examples/npu_neural_mac.txt --top npu_neural_mac --max-attempts 3
+rtl-agent inspect runs/YOUR_RUN_ID
 ```
 
-Set `OPENAI_API_KEY` in your terminal, then choose a model. I recommend GPT-6 Luna as it is cheap and works well.
+`generate` uses `RTL_AGENT_MODEL`, or accepts `--model YOUR_MODEL_ID`. A supplied
+`--tb-file` remains supported by the CLI. The website uses the existing generated
+testbench flow and does not accept a replacement testbench.
 
-```bash
-rtl-agent generate --spec-file examples/npu_neural_mac.txt --top npu_neural_mac --model YOUR_MODEL_ID --max-attempts 3
-```
+## Test without API access
 
-Runs save source files, logs and reports under `runs/`; waveforms are saved when produced.
-
-## Verification
-
-A candidate must pass Verilator lint, Icarus compilation and simulation. The testbench must finish its checks and print `RTL_AGENT_PASS` exactly once.
-
-Assertion failures, timeouts and truncated logs count as failures. Repairs can replace only the RTL; the testbench stays unchanged throughout the repair loop.
-
-## Testing without an API
-
-The repo includes mock tests. Run the tests with:
-
-```bash
+```sh
+python -m pip install -e '.[dev,web]'
 pytest -q
+ruff check src tests
 ```
 
-The tests run real EDA tools on an NPU MAC fixture, including designs with deliberate logic, syntax and latch defects. Model responses are simulated in the automated tests, so pytest does not use the API.
+Providers are mocked, including SDK HTTP transport tests. EDA integration tests use
+local fixtures and the real tools; they skip if the tools are missing. Server guard
+tests use a mock provider and toolchain and need no OpenAI connection. Without the
+optional web extra, web tests skip and the CLI remains usable.
+
+The frontend is `web/index.html`; root `index.html` redirects to it. No frontend
+build step or external asset service is required. Wheels include the page and the
+five example specs.
