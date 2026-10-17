@@ -1,15 +1,15 @@
-"""Explicit hosted-mode settings, access checks and a durable shared run quota."""
+"""Hosted settings, anonymous run ownership and a shared daily Live allowance."""
 
 import hashlib
-import hmac
 import os
 import re
+import secrets
 import sqlite3
-import threading
 import time
-from collections import deque
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from datetime import time as datetime_time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -38,8 +38,6 @@ def https_origin(value: str) -> str:
 class HostedSettings:
     backend_host: str
     frontend_origins: tuple[str, ...]
-    password: str = field(repr=False)
-    daily_runs: int = 10
     max_attempts: int = 3
     run_timeout: int = 300
 
@@ -54,16 +52,6 @@ class HostedSettings:
         normalized = tuple(dict.fromkeys(https_origin(origin) for origin in self.frontend_origins))
         object.__setattr__(self, "frontend_origins", normalized)
         object.__setattr__(self, "backend_host", self.backend_host.lower())
-        if (
-            not 24 <= len(self.password) <= 256
-            or not self.password.isascii()
-            or any(not 33 <= ord(c) <= 126 for c in self.password)
-        ):
-            raise ValueError(
-                "Set RTL_AGENT_LIVE_PASSWORD in backend secrets: 24–256 non-space ASCII characters."
-            )
-        if not 1 <= self.daily_runs <= 100:
-            raise ValueError("RTL_AGENT_DAILY_RUN_LIMIT must be between 1 and 100.")
         if not 1 <= self.max_attempts <= 5:
             raise ValueError("RTL_AGENT_HOSTED_MAX_ATTEMPTS must be between 1 and 5.")
         if not 10 <= self.run_timeout <= 600:
@@ -88,70 +76,155 @@ class HostedSettings:
                 for value in os.environ.get("RTL_AGENT_ALLOWED_ORIGINS", "").split(",")
                 if value.strip()
             ),
-            password=os.environ.get("RTL_AGENT_LIVE_PASSWORD", ""),
-            daily_runs=integer("RTL_AGENT_DAILY_RUN_LIMIT", 10),
             max_attempts=integer("RTL_AGENT_HOSTED_MAX_ATTEMPTS", 3),
             run_timeout=integer("RTL_AGENT_HOSTED_RUN_TIMEOUT", 300),
         )
 
 
-class HostedAccess:
-    def __init__(self, settings: HostedSettings):
-        self.settings = settings
-        self.password_hash = hashlib.sha256(settings.password.encode()).digest()
-        self.failures: deque[float] = deque()
-        self.lock = threading.Lock()
+DAILY_RUN_LIMIT = 20
+SESSION_SECONDS = 24 * 60 * 60
+SINGAPORE = timezone(timedelta(hours=8), "Asia/Singapore")
 
-    def authenticate(self, authorization: str | None, *, required: bool) -> bool:
-        if not authorization and not required:
-            return False
-        prefix, _, value = (authorization or "").partition(" ")
-        supplied = hashlib.sha256(value.encode()).digest()
-        if prefix.lower() == "bearer" and hmac.compare_digest(supplied, self.password_hash):
-            return True
-        # One global bucket also works behind proxies without trusting forwarded IP headers.
-        with self.lock:
-            now = time.monotonic()
-            while self.failures and self.failures[0] < now - 60:
-                self.failures.popleft()
-            if len(self.failures) >= 20:
-                raise HTTPException(
-                    429,
-                    "Too many access attempts. Try again in a minute.",
-                    headers={"Retry-After": "60"},
+
+def daily_window(now: float) -> tuple[str, float]:
+    """Singapore has a fixed UTC+8 offset, with no daylight-saving transitions."""
+    today = datetime.fromtimestamp(now, SINGAPORE).date()
+    tomorrow = datetime.combine(today + timedelta(days=1), datetime_time(), SINGAPORE)
+    return today.isoformat(), tomorrow.timestamp()
+
+
+class SessionStore:
+    """Tokens own runs; one SQLite counter limits all visitors together each day."""
+
+    def __init__(self, root: Path):
+        root.mkdir(parents=True, exist_ok=True)
+        self.path = root / ".hosted-sessions.sqlite3"
+        try:
+            with sqlite3.connect(self.path) as db:
+                db.execute(
+                    "CREATE TABLE IF NOT EXISTS sessions ("
+                    "id TEXT PRIMARY KEY, runs INTEGER NOT NULL, expires REAL NOT NULL)"
                 )
-            self.failures.append(now)
-        raise HTTPException(401, "Live access is locked. Enter the access password.")
+                db.execute(
+                    "CREATE TABLE IF NOT EXISTS session_runs ("
+                    "run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL)"
+                )
+                db.execute(
+                    "CREATE INDEX IF NOT EXISTS session_runs_owner ON session_runs(session_id)"
+                )
+                db.execute(
+                    "CREATE TABLE IF NOT EXISTS daily_runs ("
+                    "day TEXT PRIMARY KEY, runs INTEGER NOT NULL)"
+                )
+        except sqlite3.Error:
+            raise ValueError("Cannot initialize hosted session storage.") from None
 
-
-class DailyQuota:
-    """Count admitted runs, including failures and stops; restarts keep the count."""
-
-    def __init__(self, root: Path, limit: int):
-        self.path = root / ".hosted-usage.sqlite3"
-        self.limit = limit
-        with sqlite3.connect(self.path) as db:
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS usage (day TEXT PRIMARY KEY, runs INTEGER NOT NULL)"
-            )
-
-    def reserve(self) -> None:
-        day = datetime.now(UTC).date().isoformat()
+    @contextmanager
+    def database(self):
         try:
             with sqlite3.connect(self.path, timeout=5) as db:
-                db.execute("BEGIN IMMEDIATE")
-                row = db.execute("SELECT runs FROM usage WHERE day = ?", (day,)).fetchone()
-                used = row[0] if row else 0
-                if used >= self.limit:
-                    raise HTTPException(
-                        429,
-                        "The shared daily Live run limit is reached. Replay is still available.",
-                    )
-                db.execute(
-                    "INSERT INTO usage(day, runs) VALUES (?, 1) "
-                    "ON CONFLICT(day) DO UPDATE SET runs = runs + 1",
-                    (day,),
-                )
-                db.execute("DELETE FROM usage WHERE day < date(?, '-7 days')", (day,))
+                yield db
         except sqlite3.Error:
-            raise HTTPException(503, "Live usage limits are temporarily unavailable.") from None
+            raise HTTPException(503, "Live session storage is temporarily unavailable.") from None
+
+    def create(self) -> dict:
+        token = secrets.token_urlsafe(32)
+        session_id = hashlib.sha256(token.encode()).hexdigest()
+        now = time.time()
+        with self.database() as db:
+            db.execute(
+                "DELETE FROM session_runs WHERE session_id IN "
+                "(SELECT id FROM sessions WHERE expires <= ?)",
+                (now,),
+            )
+            db.execute("DELETE FROM sessions WHERE expires <= ?", (now,))
+            db.execute("INSERT INTO sessions VALUES (?, 0, ?)", (session_id, now + SESSION_SECONDS))
+        return {
+            "session_token": token,
+            "session": self.info(session_id),
+            "usage": self.usage(),
+        }
+
+    def resolve(self, authorization: str | None, *, required: bool) -> str | None:
+        if not authorization and not required:
+            return None
+        prefix, _, token = (authorization or "").partition(" ")
+        if prefix.lower() != "bearer" or not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+            raise HTTPException(401, "Start a Live session to continue.")
+        session_id = hashlib.sha256(token.encode()).hexdigest()
+        self.info(session_id)  # Also rejects expired or unknown tokens.
+        return session_id
+
+    def info(self, session_id: str) -> dict:
+        with self.database() as db:
+            row = db.execute(
+                "SELECT runs, expires FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        if row is None or row[1] <= time.time():
+            raise HTTPException(401, "This Live session has ended. Choose Live to start another.")
+        return {
+            "runs": row[0],
+            "expires_at": row[1],
+        }
+
+    def usage(self) -> dict:
+        day, resets_at = daily_window(time.time())
+        with self.database() as db:
+            row = db.execute("SELECT runs FROM daily_runs WHERE day = ?", (day,)).fetchone()
+        used = row[0] if row else 0
+        return {
+            "limit": DAILY_RUN_LIMIT,
+            "used": used,
+            "remaining": max(0, DAILY_RUN_LIMIT - used),
+            "day": day,
+            "resets_at": resets_at,
+            "timezone": "Asia/Singapore",
+        }
+
+    def reserve(self, session_id: str) -> None:
+        with self.database() as db:
+            db.execute("BEGIN IMMEDIATE")
+            now = time.time()
+            row = db.execute(
+                "SELECT runs, expires FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if row is None or row[1] <= now:
+                raise HTTPException(
+                    401, "This Live session has ended. Choose Live to start another."
+                )
+            day, _ = daily_window(now)
+            daily = db.execute("SELECT runs FROM daily_runs WHERE day = ?", (day,)).fetchone()
+            if daily and daily[0] >= DAILY_RUN_LIMIT:
+                raise HTTPException(
+                    429,
+                    "Today's 20 Live runs have been used across the site. "
+                    "Live resets at midnight Singapore time. Replay is still available.",
+                )
+            db.execute(
+                "INSERT INTO daily_runs VALUES (?, 1) "
+                "ON CONFLICT(day) DO UPDATE SET runs = runs + 1",
+                (day,),
+            )
+            db.execute("UPDATE sessions SET runs = runs + 1 WHERE id = ?", (session_id,))
+
+    def bind_run(self, session_id: str, run_id: str) -> None:
+        with self.database() as db:
+            db.execute("INSERT INTO session_runs VALUES (?, ?)", (run_id, session_id))
+
+    def owned_runs(self, session_id: str) -> set[str]:
+        with self.database() as db:
+            return {
+                row[0]
+                for row in db.execute(
+                    "SELECT run_id FROM session_runs WHERE session_id = ?", (session_id,)
+                )
+            }
+
+    def require_owner(self, session_id: str, run_id: str) -> None:
+        with self.database() as db:
+            row = db.execute(
+                "SELECT 1 FROM session_runs WHERE session_id = ? AND run_id = ?",
+                (session_id, run_id),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(404, "Run not found in this session.")

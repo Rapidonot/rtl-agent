@@ -168,7 +168,7 @@ def test_serve_runs_one_local_server_without_access_logging(monkeypatch):
     ]
 
 
-def test_hosted_server_requires_explicit_secrets_and_domains(monkeypatch):
+def test_hosted_server_requires_explicit_domains(monkeypatch):
     pytest.importorskip("fastapi")
     monkeypatch.delenv("RTL_AGENT_PUBLIC_HOST", raising=False)
     result = runner.invoke(app, ["serve-hosted"])
@@ -181,7 +181,7 @@ def test_hosted_server_runs_one_worker_only_with_valid_settings(monkeypatch, tmp
     uvicorn = pytest.importorskip("uvicorn")
     monkeypatch.setenv("RTL_AGENT_PUBLIC_HOST", "backend.hf.space")
     monkeypatch.setenv("RTL_AGENT_ALLOWED_ORIGINS", "https://site.vercel.app")
-    monkeypatch.setenv("RTL_AGENT_LIVE_PASSWORD", "test-password-for-invited-visitors")
+    monkeypatch.delenv("RTL_AGENT_LIVE_PASSWORD", raising=False)
     monkeypatch.setenv("RTL_AGENT_RUNS_DIR", str(tmp_path))
     calls = []
     monkeypatch.setattr(uvicorn, "run", lambda *args, **kwargs: calls.append(kwargs))
@@ -190,4 +190,4 @@ def test_hosted_server_runs_one_worker_only_with_valid_settings(monkeypatch, tmp
     assert calls == [
         {"host": "0.0.0.0", "port": 8124, "access_log": False, "proxy_headers": False, "workers": 1}
     ]
-    assert "test-password-for-invited-visitors" not in result.output
+    assert "20 runs per day, shared across everyone" in result.output

@@ -23,7 +23,11 @@ BACKEND CONTRACT (local `rtl-agent serve`, credentials never enter this page):
 GET /api/health -> {api_key_set,tools,model,live_available,reason,busy}
 GET /api/examples -> [{id,top,title,category,spec}]
 GET /api/runs -> latest completed local runs for the gallery; source and VCD load on open.
-POST /api/run {spec,top,max_attempts} -> 202 {run_id}; 409 if busy.
+POST /api/run {spec,top,max_attempts} -> 202 {run_id,session?,usage?}; 409 if busy.
+Hosted mode: POST /api/session issues {session_token,session:{runs,expires_at},usage}.
+Health/run/session expose usage:{limit:20,used,remaining,day,resets_at,timezone:"Asia/Singapore"}.
+The allowance is shared by everyone and resets at midnight Singapore time.
+Send its token as a Bearer header for Live APIs; each session can access only its own runs.
 GET /api/run/{id} -> UI schema v2, source:live, assumptions, caption,
 caption_source:model|deterministic, caption_pending, worker_active, and attempts.
 GET /api/run/{id}/attempts/{n}/waveform -> real VCD waveform or null.
@@ -55,12 +59,11 @@ dialog{border:1px solid #9daE8b;border-radius:10px;background:#e5eadc;color:#263
 .gallery-grid{align-content:start;grid-auto-rows:minmax(280px,auto);gap:18px}.block-card{min-height:280px;overflow-wrap:anywhere}.block-visual>div{min-width:0}.block-visual h3{overflow-wrap:anywhere;line-height:1.25}.block-visual.no-illustration{min-height:50px;margin:20px 0 12px;align-items:flex-start}.block-visual.no-illustration h3{font-size:23px;line-height:1.2}.block-card p{line-height:1.6}.card-bottom{gap:10px;flex-wrap:wrap}.open-block{margin-left:auto;white-space:nowrap}
 .mode{min-width:0;overflow:hidden;text-overflow:ellipsis;max-width:300px}.header .utilities{flex-shrink:0}
 .tour-overlay{position:fixed;inset:0;z-index:1000;isolation:isolate}.tour-map{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.tour-card{position:fixed;width:350px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);overflow:auto;background:#eef0e4;color:#26391b;border:1px solid #879775;border-radius:12px;padding:22px;box-shadow:0 16px 55px #101c1250,inset 0 1px 0 #fff;outline:none;font:14px/1.55 var(--sans)}.tour-top{display:flex;align-items:center;justify-content:space-between;gap:10px}.tour-top .silk{font-size:9px;letter-spacing:.1em}.tour-top .silk span{margin-left:8px;letter-spacing:0;color:#405431}.tour-skip{border:0;background:none;font:11px var(--mono);padding:7px 0 7px 10px;color:#526747}.tour-progress{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin:12px 0 22px}.tour-progress span{height:3px;background:#d3dbc5;border-radius:2px}.tour-progress span[data-active=true]{background:#658444}.tour-kicker{font:10px var(--mono);letter-spacing:.08em;color:#526747}.tour-card h2{font:700 25px/1.15 var(--sans);letter-spacing:-.025em;margin:9px 0 12px}.tour-card p{margin:0;color:#44573a;line-height:1.6}.tour-card .tour-hint{background:#e1e8d5;border-left:2px solid #809867;padding:9px 10px;margin-top:13px;font-size:12px}.tour-actions{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-top:24px}.tour-back{border:0;background:none;color:#4a603d;font:12px var(--mono);padding:10px 0}.tour-next{border:1px solid #d54a20;border-radius:5px;background:#ff6633;color:#182511;font:600 12px var(--mono);padding:11px 17px;box-shadow:0 2px 0 #b14320}.tour-card button:focus-visible{outline:2px solid #54783a;outline-offset:4px}.tour-back:disabled{opacity:.35}@media(max-width:899px){.tour-card{padding:18px;width:340px}.tour-card h2{font-size:23px}.tour-progress{margin-bottom:16px}.tour-card p{font-size:13px}.tour-actions{margin-top:18px}.header .mode{max-width:100%;flex-shrink:1}.header .utilities{flex-wrap:wrap}}
-.live-password{display:block;width:100%;padding:12px;margin:8px 0 12px;border:1px solid #9dad8d;border-radius:4px;background:#f1f3e8;font:15px var(--mono)}#live-dialog .dialog-actions{font:11px/1.5 var(--sans);color:#4a603c;gap:15px}
 </style></head><body>
 <main id="viewport"><div id="fit"><section id="device" aria-label="RTL Agent hardware workbench">
 <i class="screw tl" aria-hidden="true"></i><i class="screw tr" aria-hidden="true"></i><i class="screw bl" aria-hidden="true"></i><i class="screw br" aria-hidden="true"></i>
 <header class="header"><div class="brand"><h1>RTL Agent</h1></div><nav class="top-nav" aria-label="Workbench sections"><button id="nav-workbench" class="nav-key" aria-pressed="true">Workbench</button><button id="nav-gallery" class="nav-key" aria-pressed="false">Block gallery <span id="nav-count" title="Your saved runs">00</span></button></nav><div class="runtime-toggle" role="group" aria-label="Run mode"><button id="mode-replay" aria-pressed="true">Replay</button><button id="mode-live" aria-pressed="false" disabled aria-describedby="live-status">Live</button></div><span id="mode-label" class="mode" title="Real local tool results; RTL candidates are scripted fixtures.">RECORDED RUN</span><div class="utilities"><button id="open-tour" class="small-key" aria-haspopup="dialog">Quick tour</button><button id="load-report" class="small-key">Load report ↙</button><button id="save-result" class="small-key">Save result +</button><button id="open-artifacts" class="small-key dark">View artifacts ↗</button></div></header>
-<p class="product-intro">Describe a chip block in words. An AI writes the hardware design, and real tools check it.<span id="connection-notice" class="connection-notice"><span id="live-status">Checking Live availability…</span> <button id="return-replay" class="text-button" hidden>Switch to Replay</button> <button id="retry-live" class="text-button" hidden>Retry connection</button> <button id="lock-live" class="text-button" hidden>Lock Live</button></span></p>
+<p class="product-intro">Describe a chip block in words. An AI writes the hardware design, and real tools check it.<span id="connection-notice" class="connection-notice"><span id="live-status">Checking Live availability…</span> <button id="return-replay" class="text-button" hidden>Switch to Replay</button> <button id="retry-live" class="text-button" hidden>Retry connection</button></span></p>
 <div class="workspace" id="workspace">
 <section class="panel input-panel" aria-labelledby="input-title"><h2 class="module-title" id="input-title">01 / Specification</h2><fieldset id="input-fields"><legend class="sr-only">Circuit specification and run options</legend><div class="field-label"><label for="example">START WITH A BLOCK</label><span id="example-index">05 / 05</span></div><div class="selector"><button id="prev-example" class="step-key" aria-label="Previous example">‹</button><select id="example" aria-label="Bundled block"></select><button id="next-example" class="step-key" aria-label="Next example">›</button></div><div class="field-label"><label for="spec">WHAT SHOULD IT DO?</label><span>EDITABLE</span></div><div class="spec-screen"><textarea id="spec" aria-label="Circuit specification" spellcheck="false" maxlength="65536"></textarea><div class="spec-foot"><span id="spec-size"></span><button class="text-button" id="export-spec" style="font-size:7px">EXPORT SPEC ↗</button></div></div><details class="advanced"><summary>Run settings</summary><div class="advanced-fields"><div class="field"><label for="top">TOP MODULE</label><input id="top" spellcheck="false" maxlength="100"></div><div class="field"><label for="model">MODEL / REPLAY SOURCE</label><input id="model" value="scripted-source" spellcheck="false" maxlength="200"></div></div></details><div class="limit-row"><label for="max-attempts" class="silk">ATTEMPT LIMIT</label><button id="decrement" class="step-key" aria-label="Decrease attempt limit">−</button><input id="max-attempts" type="number" min="1" max="5" value="3" aria-label="Maximum attempts"><button id="increment" class="step-key" aria-label="Increase attempt limit">+</button></div></fieldset><div class="transport"><button id="run" class="run-key" aria-label="Replay saved verification, shortcut R"><span>REPLAY RUN</span><span>R ↵</span></button><button id="stop" class="stop-key" disabled aria-label="Stop replay, shortcut Escape">STOP</button></div><p class="replay-note"><strong>Real checks. Scripted candidates.</strong> Replay a saved example, or import a run from your generation engine.</p><section id="assumptions" class="assumptions" hidden><h3>Design assumptions</h3><ul id="assumptions-list"></ul></section></section>
 <section class="capture-module" aria-labelledby="capture-title"><h2 class="module-title" id="capture-title">02 / What went wrong, and how it got fixed</h2><div class="capture-topline"><div class="capture-heading"><h2 id="block-title">INT8 multiply–accumulate</h2></div><div class="view-switch" role="group" aria-label="Waveform signal view"><button id="focus-signals" aria-pressed="true">Condensed view</button><button id="all-signals" aria-pressed="false">All signals</button></div></div><div class="display-bezel" id="waveform-panel" hidden><div class="display"><div class="display-head"><span class="scope-name" id="scope-title"></span><span class="display-state" id="capture-status"></span></div><div class="wave-area" id="wave-area"><canvas id="waveform" role="img" aria-describedby="waveform-guide" aria-label="Recorded waveform. Drag timing cursors A and B or use the numeric controls below."></canvas><div class="failure-callout" id="failure-callout" hidden><strong>Bug caught here</strong><span id="failure-time"></span></div></div><div class="display-tools"><div class="cursor-readouts"><label>A <input id="cursor-a" type="number" min="0" value="0" step="any" aria-label="Cursor A time in nanoseconds"> ns</label><label>B <input id="cursor-b" type="number" min="0" value="0" step="any" aria-label="Cursor B time in nanoseconds"> ns</label><output id="cursor-delta" aria-label="Cursor time difference">Δ 0 ns</output></div><div class="scope-buttons"><button id="jump-failure" aria-label="Focus waveform on failure timestamp">!</button><button id="zoom-out" aria-label="Zoom out waveform">−</button><button id="zoom-in" aria-label="Zoom in waveform">+</button><button id="zoom-reset" aria-label="Fit waveform to display">↔</button></div></div></div></div><p class="no-waveform-message" id="no-waveform-message" role="status" hidden><span id="waveform-absence-text">No waveform was recorded for this attempt</span><span id="waveform-reason" class="waveform-reason" role="img" tabindex="0" aria-label="Why no waveform is available">ⓘ</span></p><p class="waveform-guide" id="waveform-guide">Each row is a wire in the circuit over time. The red marker is where it went wrong.</p><div class="attempt-rack"><div class="attempt-keys" id="attempt-keys" role="group" aria-label="Select verification attempt"></div></div><section class="caption" aria-labelledby="caption-title"><div class="caption-header"><span id="caption-attribution" hidden></span><button id="view-raw-error" class="text-button">View raw error ↗</button></div><h3 id="caption-title"></h3><p id="caption-body"></p></section></section>
@@ -79,7 +82,6 @@ dialog{border:1px solid #9daE8b;border-radius:10px;background:#e5eadc;color:#263
 <h2 id="tour-title"></h2><p id="tour-body"></p><p id="tour-hint" class="tour-hint" hidden></p>
 <div class="tour-actions"><button id="tour-back" class="tour-back">Back</button><button id="tour-next" class="tour-next">Next</button></div>
 </section></div>
-<dialog id="live-dialog" aria-labelledby="live-dialog-title"><div class="dialog-head"><h2 id="live-dialog-title">Unlock Live generation.</h2><button class="close-dialog" id="close-live" aria-label="Close Live access">×</button></div><p>Enter the access password shared with you. The OpenAI key stays on the server. People with this password share the Live run gallery and daily allowance.</p><form id="live-access-form"><label for="live-password" class="small-label">LIVE ACCESS PASSWORD</label><input id="live-password" class="live-password" type="password" autocomplete="off" maxlength="256" required><div id="live-access-error" class="form-error" role="alert"></div><div class="dialog-actions"><span>The app keeps access in this tab’s memory only.</span><button id="unlock-live" class="primary-key" type="submit">Unlock Live</button></div></form></dialog>
 <dialog id="artifacts-dialog" class="artifacts-dialog" aria-labelledby="artifacts-title"><div class="dialog-head"><h2 id="artifacts-title">Inspect the evidence.</h2><button class="close-dialog" id="close-artifacts" aria-label="Close artifacts">×</button></div><div class="artifact-controls"><label for="artifact-attempt">ATTEMPT</label><select id="artifact-attempt"></select><button id="export-report" class="text-button">Export complete result JSON ↗</button></div><pre id="raw-evidence" class="raw-evidence" hidden></pre><div class="code-shell"><div class="code-tabs" role="tablist" aria-label="Source and diagnostic artifacts"><button id="tab-rtl" role="tab" aria-selected="true" aria-controls="code-panel" data-tab="rtl">RTL</button><button id="tab-testbench" role="tab" aria-selected="false" aria-controls="code-panel" tabindex="-1" data-tab="testbench">TESTBENCH</button><button id="tab-diff" role="tab" aria-selected="false" aria-controls="code-panel" tabindex="-1" data-tab="diff">DIFF</button><button id="tab-log" role="tab" aria-selected="false" aria-controls="code-panel" tabindex="-1" data-tab="log">LOG</button></div><div class="code-info"><span id="code-filename"></span><span class="locked" id="code-badge"></span></div><div id="code-panel" class="code-scroll" role="tabpanel" aria-labelledby="tab-rtl" tabindex="0"><pre class="code-content" id="code-content"></pre></div><div class="code-foot"><span id="code-caption"></span><span>1–4 / TABS</span></div></div></dialog>
 <dialog id="import-dialog" aria-labelledby="import-title"><div class="dialog-head"><h2 id="import-title">Load a saved run.</h2><button class="close-dialog" id="close-import" aria-label="Close import">×</button></div><p>Import a native RTL Agent report or a saved result with embedded sources and waveforms. Native waveform snapshots show only the recorded tail. No missing artifacts are invented.</p><label class="sr-only" for="import-json">Run report JSON</label><textarea id="import-json" spellcheck="false" placeholder="Paste report JSON"></textarea><div id="import-error" class="form-error" role="alert"></div><div class="dialog-actions"><button class="small-key" id="sample-json">USE SAVED EXAMPLE</button><div><button class="small-key" id="choose-file">CHOOSE FILE</button><button class="primary-key" id="apply-import">LOAD →</button></div></div><input type="file" id="report-file" accept=".json,application/json" hidden></dialog>
 <dialog id="save-dialog" aria-labelledby="save-title"><div class="dialog-head"><h2 id="save-title">Save to your block gallery.</h2><button class="close-dialog" id="close-save" aria-label="Close save">×</button></div><div class="save-fields"><div><label for="save-name">BLOCK NAME</label><input id="save-name" maxlength="80"></div><div><label for="save-category">CATEGORY</label><select id="save-category"><option>CPU</option><option>GPU</option><option>NPU</option><option>Custom</option></select></div></div><p>The report and any attached source, metrics and traces are stored in this browser.</p><div class="form-error" id="save-error" role="alert"></div><button class="primary-key" id="confirm-save">SAVE RESULT +</button></dialog>
@@ -87,7 +89,17 @@ dialog{border:1px solid #9daE8b;border-radius:10px;background:#e5eadc;color:#263
 'use strict';
 const $=id=>document.getElementById(id), clone=value=>JSON.parse(JSON.stringify(value));
 const API_BASE_URL=JSON.parse($('rtl-agent-public-config').textContent).apiBaseUrl||'';
-let liveAccessToken='';
+const LIVE_SESSION_KEY='rtl-agent.live-session.v1';
+let liveSessionToken='';
+try{const saved=sessionStorage.getItem(LIVE_SESSION_KEY);if(/^[A-Za-z0-9_-]{43}$/.test(saved||''))liveSessionToken=saved;}catch{}
+let sessionRequest=null;
+function clearLiveSession(){
+  liveSessionToken='';try{sessionStorage.removeItem(LIVE_SESSION_KEY);}catch{}
+  if(apiHealth)apiHealth.session=null;
+}
+function saveLiveSession(token){
+  liveSessionToken=token;try{sessionStorage.setItem(LIVE_SESSION_KEY,token);}catch{}
+}
 const STAGES=['lint','compile','simulate','synth','marker'], TOOL_STAGES=STAGES.slice(0,4);
 const pad=(n,s=2)=>String(n).padStart(s,'0');
 const asSigned=(n,bits)=>((n+2**(bits-1))%2**bits+2**bits)%2**bits-2**(bits-1);
@@ -311,8 +323,8 @@ class ReplayRunEngine extends RunEngine{
 }
 async function apiRequest(path,options={}){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),path==='/api/health'?30000:10000);
-  const access=liveAccessToken,headers=new Headers(options.headers);if(access)headers.set('Authorization','Bearer '+access);
-  try{const response=await fetch(API_BASE_URL+path,{...options,headers,credentials:'omit',signal:controller.signal,cache:'no-store'});let data;try{data=await response.json();}catch{throw new Error('The local server returned an unreadable response.');}if(response.status===401&&access===liveAccessToken){liveAccessToken='';if(apiHealth)apiHealth.authenticated=false;}if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:Array.isArray(data.detail)?data.detail.map(item=>item.msg||'Invalid request').join('; '):'The local request failed ('+response.status+').');return data;}
+  const access=liveSessionToken,headers=new Headers(options.headers);if(access)headers.set('Authorization','Bearer '+access);
+  try{const response=await fetch(API_BASE_URL+path,{...options,headers,credentials:'omit',signal:controller.signal,cache:'no-store'});let data;try{data=await response.json();}catch{throw new Error('The local server returned an unreadable response.');}if(response.status===401&&access===liveSessionToken)clearLiveSession();if(!response.ok){const error=new Error(typeof data.detail==='string'?data.detail:Array.isArray(data.detail)?data.detail.map(item=>item.msg||'Invalid request').join('; '):'The request failed ('+response.status+').');error.status=response.status;throw error;}return data;}
   catch(error){if(error.name==='AbortError')throw new Error(API_BASE_URL?'The Live backend did not respond. It may be waking up; retry shortly.':'The local server did not respond.');throw error;}finally{clearTimeout(timer);}
 }
 async function hydrateRemoteReport(report,cache=new Map()){
@@ -334,7 +346,7 @@ class RemoteRunEngine extends RunEngine{
     const token=++this.generation;this.waves.clear();this.runId=null;this.report={ui_schema_version:2,source:'live',run_id:'starting-live',model:apiHealth?.model||'',spec,top:options.top,title:'Custom chip block',category:'Custom',status:'running',elapsed_ms:0,max_attempts:options.maxAttempts,attempts:[],assumptions:[]};this.emit({type:'snapshot',report:clone(this.report)});
     try{
       const started=await apiRequest('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({spec,top:options.top,max_attempts:options.maxAttempts})});
-      this.runId=started.run_id;if(token!==this.generation){await apiRequest('/api/run/'+encodeURIComponent(this.runId)+'/cancel',{method:'POST'});return;}
+      this.runId=started.run_id;if(started.session&&apiHealth){apiHealth.session=started.session;apiHealth.usage=started.usage;updateHealthDisplay();}if(token!==this.generation){await apiRequest('/api/run/'+encodeURIComponent(this.runId)+'/cancel',{method:'POST'});return;}
       while(token===this.generation){
         const report=await apiRequest('/api/run/'+encodeURIComponent(this.runId));
         await hydrateRemoteReport(report,this.waves);
@@ -344,44 +356,48 @@ class RemoteRunEngine extends RunEngine{
         if(report.status!=='running'&&!report.caption_pending&&!report.worker_active)return;
         await new Promise(resolve=>setTimeout(resolve,1000));
       }
-    }catch(error){if(token!==this.generation)return;if(this.report?.status==='running'){this.report.status='error';this.report.error=error.message;this.emit({type:'snapshot',report:clone(this.report)});}this.emit({type:'error',message:error.message});throw error;}
+    }catch(error){if(token!==this.generation)return;if(this.report?.status==='running'){this.report.status='error';this.report.error=error.message;this.emit({type:'snapshot',report:clone(this.report)});}this.emit({type:'error',message:error.message});if(apiHealth?.hosted)refreshHealth();throw error;}
   }
   cancel(){const id=this.runId,active=this.report?.status==='running';this.generation++;if(id&&active)apiRequest('/api/run/'+encodeURIComponent(id)+'/cancel',{method:'POST'}).catch(error=>showConnectionError(error.message));if(active){this.report.status='interrupted';this.report.error='Stop requested. The server finishes the current bounded operation.';this.emit({type:'snapshot',report:clone(this.report)});}}
 }
 const replayEngine=new ReplayRunEngine(),remoteEngine=new RemoteRunEngine();let engine=replayEngine;
-let apiHealth=null,serverExamples=new Map(),healthRequest=0,accessRequest=0;
-function needsLiveAccess(){return !!apiHealth?.authentication_required&&!apiHealth.authenticated;}
+let apiHealth=null,serverExamples=new Map(),healthRequest=0;
+function hasLiveSession(){
+  return !!liveSessionToken&&!!apiHealth?.session;
+}
+function liveQuotaReached(){
+  return !!apiHealth?.hosted&&apiHealth.usage?.remaining===0;
+}
 function updateHealthDisplay(){
-  const locked=needsLiveAccess(),ready=!!apiHealth?.live_available;
-  $('mode-live').disabled=!ready||state.running;$('mode-live').title=apiHealth?.reason||(locked?'Enter the access password to use Live':'Generate and check a design');
-  $('live-status').textContent=apiHealth?.reason||(locked?'Live needs an access password. Replay is open to everyone.':apiHealth?.hosted?`Live unlocked for this tab. Shared limit: ${apiHealth.limits.daily_runs} runs per UTC day, up to ${apiHealth.limits.max_attempts} attempts per run.`:'');
-  $('connection-notice').hidden=ready&&!apiHealth?.hosted;$('retry-live').hidden=ready;$('lock-live').hidden=!apiHealth?.hosted||locked;
-  document.querySelector('[data-filter=Your]').textContent=apiHealth?.hosted?'Live runs':'Your runs';
-  document.querySelector('#gallery .gallery-note:last-child').textContent=apiHealth?.hosted?'Live runs are shared with everyone who has the access password. Hosting storage may reset. Export results you want to keep. Examples are recorded demos.':'Live runs are saved on this computer. Imported copies stay in this browser. Examples are recorded demos. Passing the checks is not a formal proof.';
+  const ready=!!apiHealth?.live_available,usage=apiHealth?.usage;
+  $('mode-live').disabled=!ready||state.running||!!sessionRequest;$('mode-live').title=apiHealth?.reason||'Generate and check a design';
+  $('live-status').textContent=apiHealth?.reason||(apiHealth?.hosted?(usage?`Live runs left today: ${usage.remaining} of ${usage.limit}, shared by everyone. Resets at midnight Singapore time. Replay is unlimited.`:'Live allows 20 runs per day across everyone. Resets at midnight Singapore time. Replay is unlimited.'):'');
+  $('connection-notice').hidden=ready&&!apiHealth?.hosted;$('retry-live').hidden=ready;
+  document.querySelector('[data-filter=Your]').textContent='Your runs';
+  document.querySelector('#gallery .gallery-note:last-child').textContent=apiHealth?.hosted?'Your Live runs belong to this browser session. Export results you want to keep. Imported copies stay in this browser. Examples are recorded demos.':'Live runs are saved on this computer. Imported copies stay in this browser. Examples are recorded demos. Passing the checks is not a formal proof.';
   if(apiHealth?.model&&engine.mode==='live')$('model').value=apiHealth.model;
+  const limited=engine.mode==='live'&&apiHealth?.hosted&&(!hasLiveSession()||liveQuotaReached());
+  $('run').disabled=state.running||limited;$('run').title=limited?(liveQuotaReached()?"Today's 20 Live runs have been used across the site. Resets at midnight Singapore time. Replay is still available.":'Choose Live to start a session.') : '';
 }
-function requestLiveMode(){
+async function ensureLiveSession(){
+  if(!apiHealth?.hosted||hasLiveSession())return;
+  if(!sessionRequest){sessionRequest=apiRequest('/api/session',{method:'POST'});updateHealthDisplay();}
+  try{const data=await sessionRequest;saveLiveSession(data.session_token);apiHealth.session=data.session;apiHealth.usage=data.usage;}
+  finally{sessionRequest=null;updateHealthDisplay();}
+}
+async function requestLiveMode(){
   if(state.running||!apiHealth?.live_available)return;
-  if(needsLiveAccess()){$('live-access-error').textContent='';$('live-password').value='';$('live-dialog').showModal();$('live-password').focus();return;}
-  setRunMode('live');
-}
-async function unlockLive(event){
-  event.preventDefault();const request=++accessRequest,password=$('live-password').value;$('live-password').value='';$('unlock-live').disabled=true;$('live-access-error').textContent='';liveAccessToken=password;
-  try{const ready=await apiRequest('/api/health');if(request!==accessRequest||!$('live-dialog').open)return;if(!ready.authenticated)throw new Error('Live access could not be unlocked.');apiHealth=ready;updateHealthDisplay();$('live-dialog').close();setRunMode('live');refreshRunGallery();}
-  catch(error){if(request!==accessRequest)return;liveAccessToken='';$('live-access-error').textContent=error.message;$('live-password').focus();}
-  finally{$('unlock-live').disabled=false;}
-}
-function lockLive(){
-  if(state.running)return;liveAccessToken='';if(apiHealth)apiHealth.authenticated=false;galleryRequest++;state.serverRuns=[];state.sessionRuns=[];setRunMode('replay');loadRecord(CONFIG.records.find(r=>r.category==='NPU'));updateHealthDisplay();renderGallery();
+  try{await ensureLiveSession();setRunMode('live');}
+  catch(error){showConnectionError(error.message);}
 }
 function showConnectionError(message){$('live-status').textContent=message;$('connection-notice').hidden=false;$('return-replay').hidden=engine.mode==='replay';$('retry-live').hidden=false;}
 async function refreshHealth(){
-  const request=++healthRequest,access=liveAccessToken;
-  try{const ready=await apiRequest('/api/health');if(request!==healthRequest||access!==liveAccessToken)return apiHealth;apiHealth=ready;updateHealthDisplay();return apiHealth;}
-  catch{if(request!==healthRequest||access!==liveAccessToken)return apiHealth;apiHealth=null;$('mode-live').disabled=true;$('lock-live').hidden=true;showConnectionError(API_BASE_URL?'Live backend is unavailable or starting up. Retry in a moment; Replay is available.':'Live unavailable. Start rtl-agent serve locally to connect.');return null;}
+  const request=++healthRequest,access=liveSessionToken;
+  try{const ready=await apiRequest('/api/health');if(request!==healthRequest||access!==liveSessionToken)return apiHealth;apiHealth=ready;updateHealthDisplay();return apiHealth;}
+  catch(error){if(request!==healthRequest)return apiHealth;if(error.status===401&&access&&!liveSessionToken)return refreshHealth();if(access!==liveSessionToken)return apiHealth;apiHealth=null;$('mode-live').disabled=true;showConnectionError(API_BASE_URL?'Live backend is unavailable or starting up. Retry in a moment; Replay is available.':'Live unavailable. Start rtl-agent serve locally to connect.');return null;}
 }
 async function initializeApi(){const ready=await refreshHealth();if(tourState.active){$('tour-hint').hidden=tourState.index!==0||!!apiHealth?.live_available;queueTourLayout();}if(ready){refreshRunGallery();try{const examples=await apiRequest('/api/examples');serverExamples=new Map(examples.map(e=>[e.id,e]));}catch(error){showConnectionError(error.message);}}}
-function setRunMode(mode){if(state.running)return;if(mode==='live'&&(!apiHealth?.live_available||needsLiveAccess()))return;engine.cancel();engine=mode==='live'?remoteEngine:replayEngine;$('mode-replay').setAttribute('aria-pressed',String(mode==='replay'));$('mode-live').setAttribute('aria-pressed',String(mode==='live'));$('return-replay').hidden=true;setExample(CONFIG.records.findIndex(r=>r.id===$('example').value));$('model').readOnly=true;setLimit($('max-attempts').value);refreshHealth();render();}
+function setRunMode(mode){if(state.running)return;if(mode==='live'&&(!apiHealth?.live_available||(apiHealth.hosted&&!hasLiveSession())))return;engine.cancel();engine=mode==='live'?remoteEngine:replayEngine;$('mode-replay').setAttribute('aria-pressed',String(mode==='replay'));$('mode-live').setAttribute('aria-pressed',String(mode==='live'));$('return-replay').hidden=true;setExample(CONFIG.records.findIndex(r=>r.id===$('example').value));$('model').readOnly=true;setLimit($('max-attempts').value);refreshHealth();render();updateHealthDisplay();}
 
 let captionProvider=new RecordedCaptionProvider();
 const captionCache=new Map();let captionRequest=0;
@@ -427,7 +443,7 @@ function rememberLiveRun(report){
 let galleryRequest=0,galleryOpenRequest=0;
 async function refreshRunGallery(){
   const request=++galleryRequest;
-  if(needsLiveAccess()){state.serverRuns=[];$('gallery-status').textContent='Unlock Live to view the shared run gallery. Recorded examples are under Examples.';$('gallery-status').hidden=false;renderGallery();return;}
+  if(apiHealth?.hosted&&!hasLiveSession()){state.serverRuns=[];$('gallery-status').textContent='Your Live runs will appear here after you start a session. Recorded demos are under Examples.';$('gallery-status').hidden=false;renderGallery();return;}
   try{
     const records=await apiRequest('/api/runs');
     if(request!==galleryRequest)return;
@@ -510,7 +526,7 @@ function renderWaveformState(attempt,running){
   $('waveform-reason').setAttribute('aria-label','Why no waveform is available: '+reason);
 }
 function render(){
-  const a=activeAttempt(),meta=recordMeta(),report=state.report;state.running=report.status==='running';$('device').classList.toggle('mode-running',state.running);$('run').disabled=state.running;$('stop').disabled=!state.running;$('input-fields').disabled=state.running;$('save-result').disabled=state.running;$('open-tour').disabled=state.running;$('lock-live').disabled=state.running;$('model').readOnly=true;
+  const a=activeAttempt(),meta=recordMeta(),report=state.report;state.running=report.status==='running';$('device').classList.toggle('mode-running',state.running);$('run').disabled=state.running;$('stop').disabled=!state.running;$('input-fields').disabled=state.running;$('save-result').disabled=state.running;$('open-tour').disabled=state.running;$('model').readOnly=true;
   $('mode-label').textContent=report.source==='live'?'Generated live by '+report.model:report.source==='imported'?'Imported report':'Recorded replay';$('mode-label').title=$('mode-label').textContent;const liveReport=report.source==='live';document.querySelector('.toolchain .silk').textContent=liveReport?(apiHealth?.hosted?'SERVER TOOLCHAIN':'LOCAL TOOLCHAIN'):'RECORDED TOOLCHAIN';document.querySelector('.toolchain').title=liveReport?'Verification toolchain; inspect original stage results in the logs.':'Recorded toolchain used for the bundled results.';$('mode-replay').disabled=state.running;$('mode-live').disabled=state.running||!apiHealth?.live_available;
   const replay=engine.mode==='replay';$('run').querySelector('span').textContent=replay?'REPLAY RUN':'RUN DESIGN';$('run').setAttribute('aria-label',replay?'Replay saved verification, shortcut R':'Run design generation and verification, shortcut R');$('device').querySelector('.replay-note').textContent=replay?'Real checks. Scripted candidates. Replay saved results; no model is called.':'Generate from your editable specification and check the design with real tools.';
   $('block-title').textContent=meta.title;
@@ -521,7 +537,7 @@ function render(){
   $('waveform-guide').hidden=!a?.waveform;$('waveform-guide').textContent='Each row is a wire in the circuit over time.'+(marked?' The marker shows where it went wrong.':'');
   const assumptions=Array.isArray(report.assumptions)?report.assumptions.filter(a=>typeof a==='string'):[];$('assumptions').hidden=!assumptions.length;$('assumptions-list').replaceChildren(...assumptions.map(text=>{const li=document.createElement('li');li.textContent=text;return li;}));
   $('focus-signals').setAttribute('aria-pressed',String(state.focused));$('all-signals').setAttribute('aria-pressed',String(!state.focused));
-  renderAttempts();renderMetrics();renderGates();renderCaption();renderCursors();if($('artifacts-dialog').open)renderArtifactSelect();state.dirty=true;announce(`${meta.title}. ${$('caption-title').textContent}`);
+  renderAttempts();renderMetrics();renderGates();renderCaption();renderCursors();if(apiHealth?.hosted)updateHealthDisplay();if($('artifacts-dialog').open)renderArtifactSelect();state.dirty=true;announce(`${meta.title}. ${$('caption-title').textContent}`);
 }
 function renderArtifactSelect(){const select=$('artifact-attempt');select.replaceChildren();state.report.attempts.forEach((a,i)=>{const option=document.createElement('option');option.value=i;option.textContent=`Attempt ${a.number} / ${a.status.toUpperCase()}`;select.append(option);});state.artifactIndex=Math.max(0,Math.min(state.report.attempts.length-1,state.artifactIndex));select.value=state.artifactIndex;renderCode();}
 function setTab(tab,focus=false){state.tab=tab;renderCode();$('code-panel').scrollTop=0;if(focus)$('tab-'+tab).focus();}
@@ -564,7 +580,7 @@ function renderGallery(){
   const add=document.createElement('article');add.className='block-card add-card';const plus=document.createElement('div');plus.className='add-symbol';plus.textContent='+';plus.setAttribute('aria-hidden','true');const title=document.createElement('h3');title.textContent='Bring your own result.';const description=document.createElement('p');description.textContent='Load a run report, inspect the evidence, then save it to your gallery.';const button=document.createElement('button');button.className='small-key';button.textContent='LOAD REPORT ↙';button.addEventListener('click',()=>showImport());add.append(plus,title,description,button);$('gallery-grid').append(add);
 }
 for(const adapter of [replayEngine,remoteEngine])adapter.onEvent(event=>{if(adapter!==engine)return;if(event.type==='error'){toast(event.message);if(adapter.mode==='live')showConnectionError(event.message);return;}if(event.type!=='snapshot')return;const oldAttempt=activeAttempt(),finished=state.report.status==='running'&&['passed','failed'].includes(event.report.status);state.report=event.report;if(adapter.mode==='live')rememberLiveRun(event.report);if(finished&&state.follow)focusInitialAttempt();else if(state.follow||state.selected>=state.report.attempts.length)state.selected=state.report.attempts.length-1;if(activeAttempt()?.diagnostic?.time_ns!==oldAttempt?.diagnostic?.time_ns)focusFailure();render();});
-function runDemo(){if(state.running)return;const spec=$('spec').value.trim(),top=$('top').value.trim();if(!spec||new TextEncoder().encode(spec).length>65536){toast('Enter a specification of 1–65,536 UTF-8 bytes.');$('spec').focus();return;}if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(top)){toast('Use a valid SystemVerilog top-module name.');$('top').focus();return;}state.follow=true;setPage('workbench');setLimit($('max-attempts').value);Promise.resolve().then(()=>engine.start(spec,{exampleId:$('example').value,top,model:$('model').value.trim(),maxAttempts:Number($('max-attempts').value)})).catch(error=>{engine.cancel();toast(error.message);});}
+function runDemo(){if(state.running)return;if(engine.mode==='live'&&apiHealth?.hosted&&(!hasLiveSession()||liveQuotaReached())){toast(liveQuotaReached()?"Today's 20 Live runs have been used across the site. Resets at midnight Singapore time. Replay is still available.":'Choose Live to start a session.');return;}const spec=$('spec').value.trim(),top=$('top').value.trim();if(!spec||new TextEncoder().encode(spec).length>65536){toast('Enter a specification of 1–65,536 UTF-8 bytes.');$('spec').focus();return;}if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(top)){toast('Use a valid SystemVerilog top-module name.');$('top').focus();return;}state.follow=true;setPage('workbench');setLimit($('max-attempts').value);Promise.resolve().then(()=>engine.start(spec,{exampleId:$('example').value,top,model:$('model').value.trim(),maxAttempts:Number($('max-attempts').value)})).catch(error=>{engine.cancel();toast(error.message);});}
 function showImport(clear=true){if(clear)$('import-error').textContent='';if(!$('import-dialog').open)$('import-dialog').showModal();}
 function importText(text){try{const report=parseReport(text);loadRecord({id:report.run_id,title:report.top,category:'SAVED',report});$('import-dialog').close();toast(`Loaded ${report.attempts.length} attempts. ${report.attempts.some(a=>a.waveform?.partial)?'Waveform shows recorded tail snapshots.':report.attempts.some(a=>a.waveform)?'Attached traces are available.':'No waveform attached.'}`);return true;}catch(error){$('import-error').textContent=error.message;return false;}}
 async function importFile(file){if(!file)return;if(file.size>10*1024*1024){showImport();$('import-error').textContent='Report exceeds 10 MiB.';return;}try{if(!importText(await file.text()))showImport(false);}catch{showImport();$('import-error').textContent='Could not read that file.';}$('report-file').value='';}
@@ -734,7 +750,7 @@ function showTourStep(index){
   $('tour-count').textContent=`${tourState.index+1} OF ${TOUR_STEPS.length}`;
   $('tour-kicker').textContent=step.kicker;$('tour-title').textContent=step.title;$('tour-body').textContent=step.body;
   $('tour-hint').hidden=tourState.index!==0||!!apiHealth?.live_available;
-  $('tour-hint').textContent=API_BASE_URL?'Replay works straight away. Live connects to the server and needs an access password. The server may take a moment to wake up.':'Replay works straight away. Live needs your API key and local checking tools to be ready.';
+  $('tour-hint').textContent=API_BASE_URL?'Replay works straight away. Live allows 20 runs per day, shared by everyone. The count resets at midnight Singapore time. The server may take a moment to wake up.':'Replay works straight away. Live needs your API key and local checking tools to be ready.';
   $('tour-back').disabled=tourState.index===0;$('tour-next').textContent=tourState.index===TOUR_STEPS.length-1?'Finish tour ✓':'Next';
   $('tour-progress').replaceChildren(...TOUR_STEPS.map((_,i)=>{const span=document.createElement('span');span.dataset.active=i<=tourState.index;return span;}));
   const target=step.targets.map(s=>document.querySelector(s)).find(el=>el?.getClientRects().length)||document.querySelector(step.fallback||step.targets[0]);
@@ -785,7 +801,7 @@ $('prev-example').addEventListener('click',()=>setExample(CONFIG.records.findInd
 $('spec').addEventListener('input',updateSpecSize);$('max-attempts').addEventListener('change',e=>setLimit(e.target.value));$('decrement').addEventListener('click',()=>setLimit(+$('max-attempts').value-1));$('increment').addEventListener('click',()=>setLimit(+$('max-attempts').value+1));
 $('export-spec').addEventListener('click',e=>{e.preventDefault();download($('spec').value,$('top').value.replace(/[^A-Za-z0-9_-]/g,'_')+'-spec.txt','text/plain');});
 $('mode-replay').addEventListener('click',()=>setRunMode('replay'));$('mode-live').addEventListener('click',requestLiveMode);$('return-replay').addEventListener('click',()=>setRunMode('replay'));
-$('live-access-form').addEventListener('submit',unlockLive);$('close-live').addEventListener('click',()=>$('live-dialog').close());$('live-dialog').addEventListener('close',()=>{accessRequest++;$('live-password').value='';if(!apiHealth?.authenticated)liveAccessToken='';});$('lock-live').addEventListener('click',lockLive);$('retry-live').addEventListener('click',initializeApi);
+$('retry-live').addEventListener('click',initializeApi);
 $('run').addEventListener('click',runDemo);$('stop').addEventListener('click',()=>engine.cancel());
 $('nav-workbench').addEventListener('click',()=>setPage('workbench'));$('nav-gallery').addEventListener('click',()=>setPage('gallery'));
 $('focus-signals').addEventListener('click',()=>{state.focused=true;render();});$('all-signals').addEventListener('click',()=>{state.focused=false;render();});
@@ -811,6 +827,10 @@ document.addEventListener('keydown',e=>{
 });
 window.addEventListener('resize',()=>{fitDevice();scope.resize();});window.matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change',()=>state.dirty=true);
 fitDevice();render();renderGallery();scope.resize();initializeApi();initializeTour();
+// Refresh the shared allowance after other visitors run, or a new Singapore day starts.
+function refreshHostedUsage(){if((API_BASE_URL||apiHealth?.hosted)&&!document.hidden&&!state.running)refreshHealth();}
+setInterval(refreshHostedUsage,60000);
+document.addEventListener('visibilitychange',refreshHostedUsage);
 function frame(now){if(state.dirty||state.running){scope.draw(now);state.dirty=false;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
 window.RTLAgent={setCaptionProvider(provider){if(!provider||typeof provider.describe!=='function')throw new Error('Caption provider needs describe(facts)');captionProvider=provider;captionCache.clear();renderCaption();},RunEngine,ReplayRunEngine,CaptionProvider,RecordedCaptionProvider,RemoteRunEngine,get engine(){return engine;},parseReport,captionFacts,getCaptionFacts:()=>clone(state.captionFacts),getReport:()=>clone(state.report),getSavedExamples:()=>clone(CONFIG.records)};
 

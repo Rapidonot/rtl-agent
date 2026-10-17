@@ -7,12 +7,21 @@ See the README for complete macOS setup commands.
 
 For optional Vercel + Docker hosting, see [hosting.md](hosting.md). The frontend
 build embeds only `RTL_AGENT_API_BASE_URL`. `serve-hosted` requires an explicit
-backend host, exact HTTPS website origins and a Live access password; it does not
-relax the local command's guards. Passwords travel in Authorization headers over
-HTTPS and stay in tab memory, not URL parameters or browser storage. Replay stays
-public; all Live runs, waveforms and gallery APIs require access. The Live gallery
-is shared with everyone who has the password. Server limits cap attempts, elapsed
-run time and the shared number of admitted runs per UTC day.
+backend host and exact HTTPS website origins, leaving local guards unchanged.
+Visitors need no password: POST `/api/session` issues an opaque random identifier
+for run ownership. The backend allows **20 Live runs per day across everyone**,
+resetting at midnight Singapore time (UTC+8). `GET /api/health`, session creation
+and run admission expose the shared `usage` object: `limit`, `used`, `remaining`,
+`day`, `resets_at` (Unix seconds), and `timezone` (`Asia/Singapore`).
+The page refreshes this count about once a minute and when the tab becomes visible.
+The identifier lives in sessionStorage and expires after 24 hours. Bearer headers
+carry that identifier, never the OpenAI key. Cross-site cookies are not needed.
+SQLite enforces admission atomically and scopes reports, gallery, waveforms and
+cancel requests to the owning session. A run includes all its repairs. Errors
+and stops count; busy and invalid requests do not. New sessions do not refill
+the daily allowance. Replay and existing results stay available at exhaustion.
+Counts and ownership survive process restarts on the same disk; a hosting disk
+reset loses them. This is a run limit, not a dollar spending cap.
 
 Replay remains the default and animates the five embedded CPU/GPU/NPU examples.
 The candidates are scripted fixtures; their lint, simulation and Yosys evidence
@@ -144,7 +153,7 @@ Browser validation runs the full Replay/Live path against a fixture model provid
 and real Verilator/Icarus/Yosys, including failure/repair, per-attempt VCDs, the real
 fatal timestamp, auto-zoom, raw errors, assumptions, caption attribution, API error
 recovery and responsive layouts. Hosted validation also covers cross-origin
-password access, shared quotas, real-tool failure/repair and frontend builds
+automatic sessions, shared daily quotas, real-tool failure/repair and frontend builds
 that exclude server secrets. The full suite passes with network calls blocked
 in Linux Python 3.12 and in the Python 3.11 Docker container. Live OpenAI generation,
 caption quality, macOS Homebrew behavior, account integrations and public cloud

@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from rtl_agent.agent import RTLAgent, _save, load_report
 from rtl_agent.captions import circuit_name
 from rtl_agent.control import RunControl, RunStopped
-from rtl_agent.hosting import DailyQuota, HostedAccess, HostedSettings
+from rtl_agent.hosting import DAILY_RUN_LIMIT, HostedSettings, SessionStore
 from rtl_agent.models import RunConfig, RunReport
 from rtl_agent.policy import validate_top
 from rtl_agent.providers import OpenAIProvider, max_output_tokens_from_env
@@ -107,8 +107,7 @@ class RunManager:
         root: Path,
         timeout: float,
         provider_factory=None,
-        admit_run=None,
-        redact_values: tuple[str, ...] = (),
+        sessions: SessionStore | None = None,
     ):
         self.root, self.timeout = root.resolve(), timeout
         self.root.mkdir(parents=True, exist_ok=True)
@@ -120,22 +119,23 @@ class RunManager:
         self.lock = threading.Lock()
         self.active: Job | None = None
         self.jobs: dict[str, Job] = {}
-        self.admit_run = admit_run
-        self.redact_values = redact_values
+        self.sessions = sessions
 
-    def start(self, request: RunRequest) -> str:
+    def start(self, request: RunRequest, session_id: str | None = None) -> str:
         with self.lock:
             if self.active is not None:
                 raise HTTPException(
                     409, "A run is already active. Wait for it to finish or stop it."
                 )
-            if self.admit_run:
-                self.admit_run()
+            if self.sessions:
+                self.sessions.reserve(session_id)
             job = Job(request=request, control=RunControl(self.timeout))
             self.active = job
         api_key = os.environ.get("OPENAI_API_KEY", "")
 
         def created(report):
+            if self.sessions:
+                self.sessions.bind_run(session_id, report.run_id)
             job.run_id = report.run_id
             with self.lock:
                 self.jobs[report.run_id] = job
@@ -157,8 +157,6 @@ class RunManager:
                 for key in {
                     api_key,
                     os.environ.get("OPENAI_API_KEY", ""),
-                    os.environ.get("RTL_AGENT_LIVE_PASSWORD", ""),
-                    *self.redact_values,
                 } - {""}:
                     for form in (key, repr(key)[1:-1], json.dumps(key)[1:-1]):
                         details = details.replace(form, "[redacted]")
@@ -219,10 +217,12 @@ class RunManager:
         result["worker_active"] = bool(job and job.thread and job.thread.is_alive())
         return result
 
-    def gallery(self) -> list[dict]:
+    def gallery(self, run_ids: set[str] | None = None) -> list[dict]:
         """Read completed local runs without loading their source or VCD artifacts."""
         records = []
         for directory in sorted(self.root.iterdir(), reverse=True):
+            if run_ids is not None and directory.name not in run_ids:
+                continue
             try:
                 path = artifact(self.root, directory.name, "report.json")
                 text = read_text(path, limit=16 * 1024 * 1024)
@@ -298,16 +298,13 @@ def create_app(
 ) -> FastAPI:
     if not 0 < run_timeout <= 1800:
         raise ValueError("Run timeout must be between 0 and 1800 seconds.")
+    sessions = SessionStore(runs_dir.resolve()) if hosted else None
     manager = RunManager(
         runs_dir,
         min(run_timeout, hosted.run_timeout) if hosted else run_timeout,
         provider_factory,
-        redact_values=(hosted.password,) if hosted else (),
+        sessions=sessions,
     )
-    access = HostedAccess(hosted) if hosted else None
-    quota = DailyQuota(manager.root, hosted.daily_runs) if hosted else None
-    if quota:
-        manager.admit_run = quota.reserve
 
     @asynccontextmanager
     async def lifespan(app):
@@ -372,13 +369,14 @@ def create_app(
                     "Access-Control-Max-Age": "600",
                 },
             )
-        if access:
+        if sessions:
             required = request.url.path.startswith("/api/") and request.url.path not in {
                 "/api/health",
                 "/api/examples",
+                "/api/session",
             }
             try:
-                request.state.authenticated = access.authenticate(
+                request.state.session_id = sessions.resolve(
                     request.headers.get("authorization"), required=required
                 )
             except HTTPException as exc:
@@ -392,9 +390,7 @@ def create_app(
         response.headers["X-Content-Type-Options"] = "nosniff"
         if request.url.path.startswith("/api/"):
             body = b"".join([chunk async for chunk in response.body_iterator])
-            for key in {os.environ.get("OPENAI_API_KEY", ""), hosted.password if hosted else ""} - {
-                ""
-            }:
+            for key in {os.environ.get("OPENAI_API_KEY", "")} - {""}:
                 body = body.replace(key.encode(), b"[redacted]")
                 escaped = json.dumps(key)[1:-1].encode()
                 body = body.replace(escaped, b"[redacted]")
@@ -416,15 +412,34 @@ def create_app(
         if hosted:
             result.update(
                 hosted=True,
-                authentication_required=True,
-                authenticated=request.state.authenticated,
+                session_required=True,
+                session=sessions.info(request.state.session_id)
+                if request.state.session_id
+                else None,
+                usage=sessions.usage(),
                 limits={
                     "max_attempts": hosted.max_attempts,
-                    "daily_runs": hosted.daily_runs,
+                    "daily_runs": DAILY_RUN_LIMIT,
                     "run_timeout_seconds": hosted.run_timeout,
                 },
             )
         return result
+
+    @app.post("/api/session")
+    def start_session(request: Request):
+        if not sessions:
+            raise HTTPException(404, "Local mode does not require Live sessions.")
+        if request.state.session_id:
+            return {
+                "session_token": request.headers["authorization"].partition(" ")[2],
+                "session": sessions.info(request.state.session_id),
+                "usage": sessions.usage(),
+            }
+        return sessions.create()
+
+    def require_run_owner(request: Request, run_id: str):
+        if sessions:
+            sessions.require_owner(request.state.session_id, run_id)
 
     @app.get("/api/examples")
     def examples():
@@ -441,29 +456,36 @@ def create_app(
         ]
 
     @app.get("/api/runs")
-    def saved_runs():
-        return manager.gallery()
+    def saved_runs(request: Request):
+        return manager.gallery(sessions.owned_runs(request.state.session_id) if sessions else None)
 
     @app.post("/api/run", status_code=202)
-    def start_run(request: RunRequest):
+    def start_run(payload: RunRequest, request: Request):
         ready = health()
         if not ready["live_available"]:
             raise HTTPException(503, ready["reason"])
         if hosted:
-            request = request.model_copy(
-                update={"max_attempts": min(request.max_attempts, hosted.max_attempts)}
+            payload = payload.model_copy(
+                update={"max_attempts": min(payload.max_attempts, hosted.max_attempts)}
             )
-        return {"run_id": manager.start(request)}
+        session_id = request.state.session_id if sessions else None
+        result = {"run_id": manager.start(payload, session_id)}
+        if sessions:
+            result["session"] = sessions.info(session_id)
+            result["usage"] = sessions.usage()
+        return result
 
     @app.get("/api/run/{run_id}")
-    def get_run(run_id: str):
+    def get_run(run_id: str, request: Request):
+        require_run_owner(request, run_id)
         try:
             return manager.report(run_id)
         except (ValueError, OSError):
             raise HTTPException(404, "Run report is unavailable or invalid.") from None
 
     @app.post("/api/run/{run_id}/cancel", status_code=202)
-    def cancel_run(run_id: str):
+    def cancel_run(run_id: str, request: Request):
+        require_run_owner(request, run_id)
         try:
             artifact(manager.root, run_id)
         except ValueError:
@@ -478,7 +500,8 @@ def create_app(
         }
 
     @app.get("/api/run/{run_id}/attempts/{number}/waveform")
-    def get_waveform(run_id: str, number: int, explain: bool = False):
+    def get_waveform(run_id: str, number: int, request: Request, explain: bool = False):
+        require_run_owner(request, run_id)
         if not 1 <= number <= 20:
             raise HTTPException(404, "Attempt not found.")
         try:

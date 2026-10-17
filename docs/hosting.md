@@ -1,9 +1,9 @@
 # Vercel website + Hugging Face Live backend
 
-Replay is public. Invited visitors enter a separate access password for Live;
-the OpenAI key remains in backend secrets. Hosting can fit free tiers, but model
-requests are billed to your OpenAI account. GitHub can store the code and trigger
-both deployments. The OpenAI key lives only in Hugging Face Secrets, not GitHub
+Replay is public. Live allows 20 runs per day shared across all visitors,
+resetting at midnight Singapore time; the OpenAI key remains in backend secrets.
+Hosting can fit free tiers, but model requests are billed to your OpenAI account.
+GitHub can store the code and trigger both deployments. The OpenAI key lives only in Hugging Face Secrets, not GitHub
 or Vercel. A manual deployment path is also available below.
 
 The local `rtl-agent serve` workflow stays unchanged. Deployment uses the new
@@ -22,8 +22,8 @@ testbench and the exact pass-marker requirement are the same in both modes.
 3. In Vercel, choose **Add New → Project → Import Git Repository** and select
    `Rapidonot/rtl-agent`. Use the repository root, **Other** framework, the included
    `node scripts/build-web.mjs` command and `dist` output. Add the environment
-   variable `RTL_AGENT_API_BASE_URL` with your Space app URL. No API key or access
-   password goes in Vercel. Select **web-ui** as the Production Branch in the
+   variable `RTL_AGENT_API_BASE_URL` with your Space app URL. No OpenAI key
+   goes in Vercel. Select **web-ui** as the Production Branch in the
    project's Git settings; redeploy that branch if the initial import used main.
 4. Copy Vercel's production origin (such as `https://my-rtl-agent.vercel.app`).
    Add the Hugging Face secrets and variables in the configuration table below.
@@ -32,8 +32,8 @@ testbench and the exact pass-marker requirement are the same in both modes.
    with write access only to this Space. In GitHub repository **Settings → Secrets
    and variables → Actions**, add secret **HF_TOKEN** with that token. In the
    **Variables** tab add **HF_SPACE_ID**, such as `yourname/rtl-agent-live`.
-   GitHub needs this deployment token only. Keep the OpenAI key and the visitor
-   access password exclusively in Hugging Face Secrets.
+   GitHub needs this deployment token only. Keep the OpenAI key exclusively
+   in Hugging Face Secrets.
 6. Open GitHub **Actions → Deploy Live backend → Run workflow**, choose web-ui,
    and run it for the first upload. If the workflow is not yet available in the
    Actions UI, a push that adds or changes its file on web-ui also triggers it.
@@ -100,7 +100,7 @@ npx vercel@latest env add RTL_AGENT_API_BASE_URL production
 At its prompt, enter the Space app URL, such as
 `https://owner-rtl-agent-live.hf.space`. Use the origin only: no `/api`, path,
 credentials, query string or fragment. This URL is intentionally public.
-Do not add `OPENAI_API_KEY` or the Live password to Vercel.
+Do not add `OPENAI_API_KEY` to Vercel.
 
 ## 3. Configure the backend in Space Settings
 
@@ -109,24 +109,17 @@ In the Space's **Settings → Variables and secrets**, add:
 | Kind | Name | Value |
 | --- | --- | --- |
 | Secret | `OPENAI_API_KEY` | Your OpenAI project key |
-| Secret | `RTL_AGENT_LIVE_PASSWORD` | A random password, 24–256 non-space ASCII characters |
 | Variable | `RTL_AGENT_MODEL` | Your actual available OpenAI API model ID |
 | Variable | `RTL_AGENT_PUBLIC_HOST` | The app hostname, e.g. `owner-rtl-agent-live.hf.space` |
 | Variable | `RTL_AGENT_ALLOWED_ORIGINS` | The exact production Vercel origin, e.g. `https://my-rtl-agent.vercel.app` |
-| Variable | `RTL_AGENT_DAILY_RUN_LIMIT` | `10` initially |
 | Variable | `RTL_AGENT_HOSTED_MAX_ATTEMPTS` | `3` initially |
 | Variable | `RTL_AGENT_HOSTED_RUN_TIMEOUT` | `300` seconds initially |
 | Variable | `RTL_AGENT_MAX_OUTPUT_TOKENS` | `12000` initially |
 
-Generate the access password with a password manager or locally with:
-
-```sh
-openssl rand -hex 24
-```
-
-Save it in a password manager and share it privately with invited visitors.
-It is separate from your OpenAI key. Never paste either secret into source files,
-Vercel frontend settings, Git, a website URL or chat.
+No access password or quota setting is required: the hosted limit is 20 runs per
+Singapore calendar day, shared by everyone. The server issues
+a random session identifier automatically when a visitor chooses Live.
+Never put the OpenAI key into source files, frontend settings, a URL or chat.
 
 Origins must be exact HTTPS origins, with no paths or wildcards. For multiple
 sites, separate them with commas. Preview deployments and custom domains each
@@ -155,8 +148,8 @@ non-root user and starts one backend process. No key is baked into the image.
 
 Wait for the Space to show **Running**. Missing settings produce a clear startup
 error. At `https://YOUR-SPACE.hf.space/api/health`, check that `live_available` is
-true and `authentication_required` is true. This public health response reports
-key presence, never the key. The Live APIs remain locked.
+true and `session_required` is true. This public health response reports
+key presence, never the key. A browser receives its own session automatically when using Live.
 
 ## 5. Deploy the website
 
@@ -168,26 +161,40 @@ npx vercel@latest --prod
 
 Open the production URL returned by Vercel. If it differs from the origin you
 configured, update `RTL_AGENT_ALLOWED_ORIGINS` in the Space settings to match it.
-Replay works without a password. Click **Live**, enter the access password, then
-submit a specification. **Lock Live** removes access from this tab. Refreshing
-the page also requires the password again. The app never saves it in localStorage
-or sessionStorage. Cross-site cookies are not required.
+Replay works immediately. Click **Live** and submit a specification; there is no
+password prompt. The remaining count appears near the top of the page. Refreshes
+reuse the same session. Once the site has admitted 20 runs that day, new Live
+generations are disabled for everyone until midnight Singapore time. Replay and
+existing results remain usable. A new tab, browser, device or session cannot
+refill the shared allowance. The visible count refreshes about once a minute.
+
+The browser keeps a server-issued random identifier in **sessionStorage** for
+this tab, never an OpenAI key. Browser sessions normally end when their tab is
+closed; browser restore or tab duplication can preserve the identifier. Tokens
+also expire after 24 hours. The backend counts runs in SQLite and checks the
+session's ownership before serving a report, waveform, gallery or cancel request.
+Cross-site cookies are not required.
 
 The backend's key is used only for server-side model requests. All browser API
-requests go to the configured backend; authorization uses the access password,
-never the OpenAI key. The Vercel build reads only `RTL_AGENT_API_BASE_URL` and
-copies only the frontend into `dist/`.
+requests go to the configured backend; the Vercel build reads only the public
+`RTL_AGENT_API_BASE_URL` and copies only the frontend into `dist/`.
 
 ## Limits, storage and updates
 
 - One active Live run is allowed globally. Other visitors receive a busy message.
   Deploy exactly one backend replica and worker; the worker lock is per process.
-- The default shared allowance is 10 admitted runs per UTC day, counting errors,
-  failures and stops because they may incur model costs. Busy and unauthorized
-  requests do not consume the allowance. The SQLite counter survives a process
-  restart on the same disk. This is a run quota, not a dollar spending cap.
-- Everyone with the shared password can see and stop the shared Live runs. This
-  is an invited demo, not a service with separate user accounts or private galleries.
+- The site allows **20 admitted Live runs per Singapore calendar day across all
+  visitors**. The counter resets at **00:00 Asia/Singapore (UTC+8)**. A run includes
+  the original design and its repairs. Failed, stopped and initialization-error
+  runs count too; busy, invalid and missing-session requests do not.
+  Concurrent requests and new sessions cannot bypass the SQLite counter. A process
+  restart on the same disk preserves the allowance and ownership.
+- This counts runs, not dollars; one run can make several model requests. Use
+  provider billing controls for overall spending. Anonymous session expiry or
+  clearing browser storage does not reset the shared daily counter.
+- Each session sees and can stop only its own Live runs. The five recorded
+  examples remain public. Export important results before ending a session;
+  there are no user accounts or cross-device session recovery.
 - Free hosting may sleep and may reset its disk when rebuilt or restarted on a
   fresh machine. History and quota records disappear if that disk is lost.
   Export important results. Paid persistent storage is optional.
@@ -199,7 +206,7 @@ copies only the frontend into `dist/`.
   An origin error usually means the allowed website URL does not match exactly.
 - Update the frontend with another `npx vercel@latest --prod` from the updated
   frontend folder. Backend file uploads rebuild the Space. Keys stay in its
-  settings. Rotate the access password there to revoke previous access.
+  settings. API keys remain in backend secrets during source deployments.
 
 ## Local verification before publishing
 

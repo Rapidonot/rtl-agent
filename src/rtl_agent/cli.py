@@ -192,7 +192,7 @@ def serve(
 def serve_hosted(
     port: Annotated[int, typer.Option(min=1, max=65535, envvar="PORT")] = 7860,
 ) -> None:
-    """Run an explicitly configured hosted backend with password-protected Live access."""
+    """Run a hosted backend with twenty Live generations per Singapore day."""
     try:
         import uvicorn
 
@@ -209,7 +209,7 @@ def serve_hosted(
     except (ValueError, OSError) as exc:
         console.print(Text(str(exc), style="red"))
         raise typer.Exit(2) from exc
-    console.print("Hosted backend ready. Live requires the access password.")
+    console.print("Hosted backend ready. Live allows 20 runs per day, shared across everyone.")
     uvicorn.run(
         application, host="0.0.0.0", port=port, access_log=False, proxy_headers=False, workers=1
     )

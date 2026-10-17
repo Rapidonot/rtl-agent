@@ -10,11 +10,12 @@ tools check it. The website has two modes:
   and Yosys locally or on the hosted backend. The browser never receives your API key.
 
 Local development remains the default. An optional hosted mode connects a Vercel
-frontend to a Docker backend, with a separate Live access password and run limits.
+frontend to a Docker backend, with 20 Live runs per day shared across everyone.
+The counter resets at midnight Singapore time; no password is required.
 See [the hosting guide](docs/hosting.md) for the Vercel + Hugging Face setup.
 Vercel's Git integration and the included, opt-in backend workflow can deploy
 updates from GitHub's `web-ui` branch. GitHub needs only a scoped Space deployment
-token; the OpenAI key and visitor access password stay in Hugging Face Secrets.
+token; the OpenAI key stays in Hugging Face Secrets. Visitors need no password.
 The OpenAI key belongs only in backend secrets; the frontend build reads only a
 public backend URL. `rtl-agent serve` remains localhost-only.
 
