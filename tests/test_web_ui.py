@@ -276,10 +276,37 @@ engine.mode='live';apiHealth.usage.remaining=20;updateHealthDisplay();
 console.log(JSON.stringify({exhausted,replayAvailable,resetEnablesLive:!$('run').disabled,
   resetLabel:$('live-status').textContent,unchanged:before===JSON.stringify(state.report)}));
 """,
-        names=("hasLiveSession", "liveQuotaReached", "updateHealthDisplay"),
+        names=("hasLiveSession", "liveQuotaReached", "setLimit", "updateHealthDisplay"),
     )
     assert result["exhausted"]["disabled"]
     assert "0 of 20, shared by everyone" in result["exhausted"]["label"]
     assert "midnight Singapore time" in result["exhausted"]["label"]
     assert "20 of 20" in result["resetLabel"]
     assert result["replayAvailable"] and result["resetEnablesLive"] and result["unchanged"]
+
+
+def test_live_attempt_control_increases_past_three_and_respects_server_bounds():
+    result = ui_result(
+        """
+const engine={mode:'live'};
+const apiHealth={hosted:true,limits:{max_attempts:5}};
+function select(value){
+  setLimit(value);
+  return {value:Number($('max-attempts').value),max:Number($('max-attempts').max),
+    minusDisabled:$('decrement').disabled,plusDisabled:$('increment').disabled};
+}
+const three=select(3),four=select(three.value+1),five=select(four.value+1);
+const over=select(99),one=select(0);
+apiHealth.limits.max_attempts=2;const configured=select(5);
+engine.mode='replay';const replay=select(5);
+console.log(JSON.stringify({three,four,five,over,one,configured,replay}));
+""",
+        names=("setLimit",),
+    )
+    assert [result[key]["value"] for key in ("three", "four", "five")] == [3, 4, 5]
+    assert not result["three"]["plusDisabled"] and not result["four"]["plusDisabled"]
+    assert result["five"]["plusDisabled"] and result["over"]["value"] == 5
+    assert result["one"]["minusDisabled"] and result["one"]["value"] == 1
+    assert result["configured"]["max"] == result["configured"]["value"] == 2
+    assert result["configured"]["plusDisabled"]
+    assert result["replay"]["max"] == result["replay"]["value"] == 5

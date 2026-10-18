@@ -38,7 +38,7 @@ def https_origin(value: str) -> str:
 class HostedSettings:
     backend_host: str
     frontend_origins: tuple[str, ...]
-    max_attempts: int = 3
+    max_attempts: int = 5
     run_timeout: int = 300
 
     def __post_init__(self):
@@ -76,7 +76,7 @@ class HostedSettings:
                 for value in os.environ.get("RTL_AGENT_ALLOWED_ORIGINS", "").split(",")
                 if value.strip()
             ),
-            max_attempts=integer("RTL_AGENT_HOSTED_MAX_ATTEMPTS", 3),
+            max_attempts=integer("RTL_AGENT_HOSTED_MAX_ATTEMPTS", 5),
             run_timeout=integer("RTL_AGENT_HOSTED_RUN_TIMEOUT", 300),
         )
 

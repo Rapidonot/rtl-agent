@@ -782,6 +782,34 @@ def test_hosted_twenty_daily_runs_are_shared_and_survive_refresh_and_restart(hos
     assert provider.repair.call_count == 20  # Repairs belong to the same admitted run.
 
 
+def test_hosted_default_accepts_five_attempts_and_counts_one_daily_run(setup_web):
+    from rtl_agent.hosting import HostedSettings
+
+    original, provider = setup_web
+    settings = HostedSettings(
+        backend_host="backend.hf.space", frontend_origins=("https://rtl-demo.vercel.app",)
+    )
+    app = create_app(
+        runs_dir=original.state.manager.root, hosted=settings, provider_factory=lambda *_: provider
+    )
+    with LocalClient(app, "203.0.113.2") as client:
+        assert (
+            client.get("/api/health", headers=hosted_headers()).json()["limits"]["max_attempts"]
+            == 5
+        )
+        token = new_session(client)
+        response = client.post(
+            "/api/run",
+            headers=hosted_headers(token),
+            json={"spec": "An NPU MAC.", "top": "npu_neural_mac", "max_attempts": 5},
+        )
+        assert response.status_code == 202
+        report = finish_hosted(client, token, response.json()["run_id"])
+        assert report["status"] == "passed" and report["max_attempts"] == 5
+        assert response.json()["usage"]["remaining"] == 19
+        assert response.json()["session"]["runs"] == 1
+
+
 def test_hosted_sessions_cannot_read_or_stop_each_others_runs(hosted_web):
     app, _, _ = hosted_web
     with LocalClient(app, "203.0.113.2") as client:

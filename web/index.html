@@ -370,6 +370,7 @@ function liveQuotaReached(){
 }
 function updateHealthDisplay(){
   const ready=!!apiHealth?.live_available,usage=apiHealth?.usage;
+  setLimit($('max-attempts').value);
   $('mode-live').disabled=!ready||state.running||!!sessionRequest;$('mode-live').title=apiHealth?.reason||'Generate and check a design';
   $('live-status').textContent=apiHealth?.reason||(apiHealth?.hosted?(usage?`Live runs left today: ${usage.remaining} of ${usage.limit}, shared by everyone. Resets at midnight Singapore time. Replay is unlimited.`:'Live allows 20 runs per day across everyone. Resets at midnight Singapore time. Replay is unlimited.'):'');
   $('connection-notice').hidden=ready&&!apiHealth?.hosted;$('retry-live').hidden=ready;
@@ -457,7 +458,14 @@ function loadLibrary(){try{const raw=JSON.parse(localStorage.getItem(CONFIG.stor
 function setPage(page){state.page=page;$('workspace').hidden=page!=='workbench';$('verify').hidden=page!=='workbench';$('gallery').hidden=page!=='gallery';$('nav-workbench').setAttribute('aria-pressed',String(page==='workbench'));$('nav-gallery').setAttribute('aria-pressed',String(page==='gallery'));if(page==='gallery'){renderGallery();refreshRunGallery();}state.dirty=true;}
 function setExample(index,load=false){index=(index+CONFIG.records.length)%CONFIG.records.length;const record=CONFIG.records[index];$('example').value=record.id;$('spec').value=(engine.mode==='live'?serverExamples.get(record.id)?.spec:null)||record.report.spec;$('top').value=record.report.top;$('model').value=engine.mode==='live'?(apiHealth?.model||''):record.report.model;$('example-index').textContent=`${pad(index+1)} / ${pad(CONFIG.records.length)}`;updateSpecSize();if(load){engine.cancel();state.report=clone(record.report);focusInitialAttempt();render();}}
 function updateSpecSize(){$('spec-size').textContent=`${new TextEncoder().encode($('spec').value).length.toLocaleString()} UTF-8 BYTES`;}
-function setLimit(value){const limit=engine.mode==='live'&&apiHealth?.hosted?apiHealth.limits.max_attempts:5;$('max-attempts').max=limit;$('max-attempts').value=Math.max(1,Math.min(limit,Math.round(Number(value)||1)));}
+function setLimit(value){
+  const limit=engine.mode==='live'&&apiHealth?.hosted?(apiHealth.limits?.max_attempts??5):5;
+  const count=Math.max(1,Math.min(limit,Math.round(Number(value)||1)));
+  $('max-attempts').max=limit;$('max-attempts').value=count;
+  $('decrement').disabled=count<=1;$('increment').disabled=count>=limit;
+  document.querySelector('label[for="max-attempts"]').textContent=`ATTEMPT LIMIT (1–${limit})`;
+  $('increment').title=count>=limit?`Maximum ${limit} attempts per run`:'Increase attempt limit';
+}
 async function loadRecord(record){
   if(state.running){toast('Wait for the current run to finish before opening another result.');return;}
   const request=++galleryOpenRequest;
@@ -704,13 +712,13 @@ function fitDevice() {
 }
 const TOUR_KEY='rtl-agent.tour.v1';
 const TOUR_STEPS=[
-  {kicker:'START HERE',title:'Choose how to explore.',body:'Use Replay to explore pre-loaded examples, or choose Live to generate a new block from your own prompt.',targets:['#mode-replay','#mode-live']},
+  {kicker:'START HERE',title:'Choose how to explore.',body:'Use Replay to explore pre-loaded examples, or choose Live to generate a new block from your own prompt.',targets:['.runtime-toggle']},
   {kicker:'01 / SPECIFICATION',title:'Choose a starting block.',body:'Pick an example to begin. Replay uses its recorded results; in Live, the example gives you a specification to build on.',targets:['.selector']},
   {kicker:'01 / SPECIFICATION',title:'Write your prompt.',body:'Describe what your chip block should do. In Live, edit this specification, then press Run design to generate and check your circuit.',targets:['#spec','#run']},
   {kicker:'02 / WAVEFORM',title:'Follow the waveform.',body:'Each row shows a wire changing over time. A marker can point to a recorded failure; switch attempts to compare drafts.',targets:['#waveform-panel','#attempt-keys'],fallback:'#no-waveform-message'},
   {kicker:'03 / YOSYS SYNTHESIS',title:'Look inside the hardware.',body:'Yosys measures the logic gates, stored bits and connections in your design. These counts describe the circuit; they do not measure a physical chip’s speed.',targets:['.metric-hero','.metric-grid']},
   {kicker:'04 / CHECKS',title:'Read the result.',body:'Follow the checks from left to right. An attempt passes only when every required check passes; the original evidence is always available in View artifacts.',targets:['#verify']},
-  {kicker:'YOUR WORKSPACE',title:'Keep your results within reach.',body:'Workbench is where you write, run and inspect a design. Block gallery keeps your generated runs under Your runs, with the recorded demos under Examples.',targets:['#nav-workbench','#nav-gallery']}
+  {kicker:'YOUR WORKSPACE',title:'Keep your results within reach.',body:'Workbench is where you write, run and inspect a design. Block gallery keeps your generated runs under Your runs, with the recorded demos under Examples.',targets:['.top-nav']}
 ];
 const tourState={active:false,index:0,frame:0,focus:null,page:null,scroll:0};
 function queueTourLayout(){

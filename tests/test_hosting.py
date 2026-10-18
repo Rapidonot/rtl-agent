@@ -59,6 +59,21 @@ def test_hosted_env_requires_no_password_or_quota_configuration(monkeypatch):
         HostedSettings.from_env()
 
 
+def test_hosted_attempt_cap_defaults_to_five_and_preserves_explicit_settings(monkeypatch):
+    monkeypatch.setenv("RTL_AGENT_PUBLIC_HOST", "backend.example")
+    monkeypatch.setenv("RTL_AGENT_ALLOWED_ORIGINS", "https://frontend.example")
+    monkeypatch.delenv("RTL_AGENT_HOSTED_MAX_ATTEMPTS", raising=False)
+    assert HostedSettings.from_env().max_attempts == 5
+    assert (
+        HostedSettings(
+            backend_host="backend.example", frontend_origins=("https://frontend.example",)
+        ).max_attempts
+        == 5
+    )
+    monkeypatch.setenv("RTL_AGENT_HOSTED_MAX_ATTEMPTS", "2")
+    assert HostedSettings.from_env().max_attempts == 2
+
+
 def test_daily_quota_is_atomic_persistent_and_shared_across_sessions(tmp_path):
     store = SessionStore(tmp_path)
     first, second = store.create(), store.create()
