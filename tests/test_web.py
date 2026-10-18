@@ -587,3 +587,276 @@ def test_invalid_token_budget_disables_live_before_any_provider_call(setup_web, 
         assert response.status_code == 503
         provider.generate_testbench.assert_not_called()
         provider.generate.assert_not_called()
+
+
+@pytest.fixture
+def hosted_web(setup_web):
+    from rtl_agent.hosting import HostedSettings
+
+    original, provider = setup_web
+    settings = HostedSettings(
+        backend_host="backend.hf.space",
+        frontend_origins=("https://rtl-demo.vercel.app",),
+        max_attempts=2,
+        run_timeout=60,
+    )
+    app = create_app(
+        runs_dir=original.state.manager.root, hosted=settings, provider_factory=lambda *_: provider
+    )
+    return app, provider, settings
+
+
+def hosted_headers(token=None, **extra):
+    return {
+        "Host": "backend.hf.space",
+        "Origin": "https://rtl-demo.vercel.app",
+        **({"Authorization": "Bearer " + token} if token else {}),
+        **extra,
+    }
+
+
+def new_session(client):
+    response = client.post("/api/session", headers=hosted_headers())
+    assert response.status_code == 200, response.text
+    assert response.json()["session"]["runs"] == 0
+    assert response.json()["usage"]["limit"] == 20
+    return response.json()["session_token"]
+
+
+def finish_hosted(client, token, run_id):
+    for _ in range(200):
+        report = client.get("/api/run/" + run_id, headers=hosted_headers(token)).json()
+        if (
+            report["status"] != "running"
+            and not report["caption_pending"]
+            and not report["worker_active"]
+        ):
+            return report
+        time.sleep(0.01)
+    pytest.fail("Run did not finish")
+
+
+def test_hosted_health_and_session_creation_need_no_password_or_model_call(hosted_web):
+    app, provider, _ = hosted_web
+    with LocalClient(app, "203.0.113.2") as client:
+        response = client.get("/api/health", headers=hosted_headers())
+        assert response.status_code == 200 and response.json()["live_available"]
+        assert response.json()["session_required"] and response.json()["session"] is None
+        assert response.json()["limits"]["daily_runs"] == 20
+        assert response.json()["usage"]["remaining"] == 20
+        assert response.json()["usage"]["timezone"] == "Asia/Singapore"
+        assert response.json()["limits"]["max_attempts"] == 2
+        assert response.headers["access-control-allow-origin"] == "https://rtl-demo.vercel.app"
+        assert response.headers["cache-control"] == "no-store"
+        assert "secret-server-key" not in response.text
+        assert "live-password" not in client.get("/", headers=hosted_headers()).text
+        token = new_session(client)
+        resumed = client.post("/api/session", headers=hosted_headers(token)).json()
+        assert resumed["session_token"] == token and resumed["session"]["runs"] == 0
+        provider.generate_testbench.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/api/runs"),
+        ("POST", "/api/run"),
+        ("GET", "/api/run/unknown"),
+        ("POST", "/api/run/unknown/cancel"),
+        ("GET", "/api/run/unknown/attempts/1/waveform"),
+    ],
+)
+def test_hosted_live_endpoints_require_a_server_issued_session(hosted_web, method, path):
+    app, provider, _ = hosted_web
+    with LocalClient(app, "203.0.113.2") as client:
+        for token in [None, "forged-client-token", "a" * 43]:
+            response = client.request(method, path, headers=hosted_headers(token))
+            assert response.status_code == 401
+            assert response.headers["access-control-allow-origin"] == "https://rtl-demo.vercel.app"
+        assert app.state.manager.active is None
+        provider.generate_testbench.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://evil.example",
+        "https://other.vercel.app",
+        "https://rtl-demo.vercel.app.evil.example",
+        "null",
+        "http://rtl-demo.vercel.app",
+    ],
+)
+def test_hosted_origins_are_exact_even_with_valid_session(hosted_web, origin):
+    app, provider, _ = hosted_web
+    with LocalClient(app, "203.0.113.2") as client:
+        token = new_session(client)
+        response = client.get("/api/runs", headers=hosted_headers(token, Origin=origin))
+        assert response.status_code == 403
+        assert "access-control-allow-origin" not in response.headers
+        assert client.post("/api/session", headers=hosted_headers(Origin=origin)).status_code == 403
+        provider.generate_testbench.assert_not_called()
+
+
+def test_hosted_preflight_requires_origin_method_and_headers_but_no_session(hosted_web):
+    app, _, _ = hosted_web
+    with LocalClient(app, "203.0.113.2") as client:
+        headers = hosted_headers(
+            **{
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization, content-type",
+            }
+        )
+        response = client.request("OPTIONS", "/api/run", headers=headers)
+        assert response.status_code == 204
+        assert response.headers["access-control-allow-origin"] == headers["Origin"]
+        assert "access-control-allow-credentials" not in response.headers
+        headers["Access-Control-Request-Headers"] = "X-Unsafe"
+        assert client.request("OPTIONS", "/api/run", headers=headers).status_code == 403
+        headers["Access-Control-Request-Headers"] = "authorization"
+        headers["Access-Control-Request-Method"] = "DELETE"
+        assert client.request("OPTIONS", "/api/run", headers=headers).status_code == 403
+
+
+def test_hosted_twenty_daily_runs_are_shared_and_survive_refresh_and_restart(hosted_web):
+    app, provider, settings = hosted_web
+    with LocalClient(app, "203.0.113.2") as client:
+        tokens = [new_session(client), new_session(client)]
+        for number in range(1, 21):
+            token = tokens[number % 2]
+            headers = hosted_headers(token)
+            response = client.post(
+                "/api/run",
+                headers=headers,
+                json={
+                    "spec": "Design a multiply-accumulate block.",
+                    "top": "npu_neural_mac",
+                    "max_attempts": 5,
+                },
+            )
+            assert response.status_code == 202, response.text
+            assert response.json()["usage"]["remaining"] == 20 - number
+            run_id = response.json()["run_id"]
+            report = finish_hosted(client, token, run_id)
+            assert report["status"] == "passed" and report["max_attempts"] == 2
+            assert [a["status"] for a in report["attempts"]] == ["failed", "passed"]
+            assert len({a["testbench_sha256"] for a in report["attempts"]}) == 1
+        # Neither resuming a browser nor starting a new one refills the shared count.
+        assert client.post("/api/session", headers=headers).json()["usage"]["remaining"] == 0
+        assert client.get("/api/health", headers=headers).json()["usage"]["remaining"] == 0
+        assert (
+            client.post(
+                "/api/run", headers=headers, json={"spec": "twenty-first", "top": "dut"}
+            ).status_code
+            == 429
+        )
+        assert len(client.get("/api/runs", headers=headers).json()) == 10
+        wave = client.get(f"/api/run/{run_id}/attempts/1/waveform", headers=headers).json()
+        assert wave["duration_ns"] == 10
+        assert client.get("/", headers=hosted_headers()).status_code == 200
+    restarted = create_app(
+        runs_dir=app.state.manager.root, hosted=settings, provider_factory=lambda *_: provider
+    )
+    with LocalClient(restarted, "203.0.113.2") as client:
+        assert (
+            client.post(
+                "/api/run", headers=headers, json={"spec": "twenty-first", "top": "dut"}
+            ).status_code
+            == 429
+        )
+        assert client.get("/api/run/" + run_id, headers=headers).json()["status"] == "passed"
+        other = new_session(client)
+        assert (
+            client.get("/api/health", headers=hosted_headers(other)).json()["usage"]["remaining"]
+            == 0
+        )
+        assert (
+            client.post(
+                "/api/run",
+                headers=hosted_headers(other),
+                json={"spec": "new browser", "top": "dut"},
+            ).status_code
+            == 429
+        )
+    assert provider.generate_testbench.call_count == provider.generate.call_count == 20
+    assert provider.repair.call_count == 20  # Repairs belong to the same admitted run.
+
+
+def test_hosted_sessions_cannot_read_or_stop_each_others_runs(hosted_web):
+    app, _, _ = hosted_web
+    with LocalClient(app, "203.0.113.2") as client:
+        owner, other = new_session(client), new_session(client)
+        response = client.post(
+            "/api/run",
+            headers=hosted_headers(owner),
+            json={"spec": "An adder.", "top": "npu_neural_mac"},
+        )
+        run_id = response.json()["run_id"]
+        finish_hosted(client, owner, run_id)
+        assert len(client.get("/api/runs", headers=hosted_headers(owner)).json()) == 1
+        assert client.get("/api/runs", headers=hosted_headers(other)).json() == []
+        for method, path in [
+            ("GET", f"/api/run/{run_id}"),
+            ("POST", f"/api/run/{run_id}/cancel"),
+            ("GET", f"/api/run/{run_id}/attempts/1/waveform"),
+        ]:
+            assert client.request(method, path, headers=hosted_headers(other)).status_code == 404
+        assert (
+            client.get("/api/health", headers=hosted_headers(other)).json()["usage"]["remaining"]
+            == 19
+        )
+
+
+def test_hosted_busy_and_invalid_requests_do_not_consume_daily_allowance(hosted_web):
+    app, provider, _ = hosted_web
+    hold = threading.Event()
+    provider.generate.side_effect = lambda *_: (hold.wait(2), provider.generate.return_value)[1]
+    with LocalClient(app, "203.0.113.2") as client:
+        owner, other = new_session(client), new_session(client)
+        assert (
+            client.post(
+                "/api/run", headers=hosted_headers(owner), json={"spec": "", "top": "dut"}
+            ).status_code
+            == 422
+        )
+        assert client.get("/api/health", headers=hosted_headers(owner)).json()["usage"]["used"] == 0
+        try:
+            response = client.post(
+                "/api/run",
+                headers=hosted_headers(owner),
+                json={"spec": "NPU MAC", "top": "npu_neural_mac"},
+            )
+            assert response.status_code == 202
+            assert (
+                client.post(
+                    "/api/run", headers=hosted_headers(other), json={"spec": "busy", "top": "dut"}
+                ).status_code
+                == 409
+            )
+            assert (
+                client.get("/api/health", headers=hosted_headers(other)).json()["usage"]["used"]
+                == 1
+            )
+        finally:
+            hold.set()
+        finish_hosted(client, owner, response.json()["run_id"])
+
+
+def test_hosted_worker_failure_consumes_one_run_and_logs_redact_key(hosted_web, caplog):
+    app, _, _ = hosted_web
+    app.state.manager.provider_factory = Mock(side_effect=RuntimeError("secret-server-key"))
+    with LocalClient(app, "203.0.113.2") as client:
+        token = new_session(client)
+        response = client.post(
+            "/api/run", headers=hosted_headers(token), json={"spec": "x", "top": "dut"}
+        )
+        assert response.status_code == 503
+        active = app.state.manager.active
+        if active:
+            active.thread.join(2)
+        assert (
+            client.get("/api/health", headers=hosted_headers(token)).json()["usage"]["remaining"]
+            == 19
+        )
+    assert "secret-server-key" not in caplog.text
+    assert "RuntimeError" in caplog.text and "[redacted]" in caplog.text

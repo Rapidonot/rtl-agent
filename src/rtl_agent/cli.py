@@ -186,3 +186,30 @@ def serve(
         access_log=False,
         proxy_headers=False,
     )
+
+
+@app.command("serve-hosted")
+def serve_hosted(
+    port: Annotated[int, typer.Option(min=1, max=65535, envvar="PORT")] = 7860,
+) -> None:
+    """Run a hosted backend with twenty Live generations per Singapore day."""
+    try:
+        import uvicorn
+
+        from rtl_agent.hosting import HostedSettings
+        from rtl_agent.web import create_app
+
+        settings = HostedSettings.from_env()
+        application = create_app(
+            runs_dir=Path(os.environ.get("RTL_AGENT_RUNS_DIR", "runs")), hosted=settings
+        )
+    except ImportError as exc:
+        console.print("Install the web extra: python -m pip install -e '.[web]'")
+        raise typer.Exit(2) from exc
+    except (ValueError, OSError) as exc:
+        console.print(Text(str(exc), style="red"))
+        raise typer.Exit(2) from exc
+    console.print("Hosted backend ready. Live allows 20 runs per day, shared across everyone.")
+    uvicorn.run(
+        application, host="0.0.0.0", port=port, access_log=False, proxy_headers=False, workers=1
+    )

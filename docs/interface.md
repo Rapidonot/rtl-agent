@@ -2,8 +2,26 @@
 
 The maintained page is `web/index.html`; root `index.html` redirects to it.
 Run `rtl-agent serve` after installing `.[web]`. The UI has no build step,
-external font service, browser credentials, hosting or deployment configuration.
+external font service or browser OpenAI credentials.
 See the README for complete macOS setup commands.
+
+For optional Vercel + Docker hosting, see [hosting.md](hosting.md). The frontend
+build embeds only `RTL_AGENT_API_BASE_URL`. `serve-hosted` requires an explicit
+backend host and exact HTTPS website origins, leaving local guards unchanged.
+Visitors need no password: POST `/api/session` issues an opaque random identifier
+for run ownership. The backend allows **20 Live runs per day across everyone**,
+resetting at midnight Singapore time (UTC+8). `GET /api/health`, session creation
+and run admission expose the shared `usage` object: `limit`, `used`, `remaining`,
+`day`, `resets_at` (Unix seconds), and `timezone` (`Asia/Singapore`).
+The page refreshes this count about once a minute and when the tab becomes visible.
+The identifier lives in sessionStorage and expires after 24 hours. Bearer headers
+carry that identifier, never the OpenAI key. Cross-site cookies are not needed.
+SQLite enforces admission atomically and scopes reports, gallery, waveforms and
+cancel requests to the owning session. A run includes all its repairs. Errors
+and stops count; busy and invalid requests do not. New sessions do not refill
+the daily allowance. Replay and existing results stay available at exhaustion.
+Counts and ownership survive process restarts on the same disk; a hosting disk
+reset loses them. This is a run limit, not a dollar spending cap.
 
 Replay remains the default and animates the five embedded CPU/GPU/NPU examples.
 The candidates are scripted fixtures; their lint, simulation and Yosys evidence
@@ -62,7 +80,7 @@ truncated model summaries. Their text-only layout avoids suggesting that every
 custom block is an ALU. Recorded examples retain their specific illustrations;
 titles and footers wrap, and card heights grow to fit the content.
 
-The service and CLI accept loopback binding only. The app also rejects remote
+The default local service and `serve` command accept loopback binding only. The app rejects remote
 clients, unexpected Host headers and cross-origin requests. Run IDs and resolved
 artifact paths are validated against the runs directory, including symlinks.
 Access logging is disabled, API responses are not cached, and credential values
@@ -134,6 +152,9 @@ caption facts and fallback, and real VCD conversion.
 Browser validation runs the full Replay/Live path against a fixture model provider
 and real Verilator/Icarus/Yosys, including failure/repair, per-attempt VCDs, the real
 fatal timestamp, auto-zoom, raw errors, assumptions, caption attribution, API error
-recovery and responsive layouts. Live OpenAI generation and caption quality, macOS
-Homebrew behavior, and an actual Python 3.11 interpreter require user-side testing;
-this environment runs Linux with Python 3.12.
+recovery and responsive layouts. Hosted validation also covers cross-origin
+automatic sessions, shared daily quotas, real-tool failure/repair and frontend builds
+that exclude server secrets. The full suite passes with network calls blocked
+in Linux Python 3.12 and in the Python 3.11 Docker container. Live OpenAI generation,
+caption quality, macOS Homebrew behavior, account integrations and public cloud
+deployment still require verification after the hosting accounts are configured.

@@ -90,7 +90,11 @@ def run_command(
 ) -> ToolResult:
     start = time.monotonic()
     # EDA subprocesses have no need for model credentials.
-    env = {k: v for k, v in os.environ.items() if not k.endswith(("_API_KEY", "_TOKEN"))}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.endswith(("_API_KEY", "_TOKEN", "_PASSWORD", "_SECRET"))
+    }
     env["LC_ALL"] = "C"
     timed_out = False
     try:

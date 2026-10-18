@@ -1,4 +1,4 @@
-"""Localhost-only web UI and background run API. Install the optional web extra."""
+"""Local or explicitly configured hosted web UI and background run API."""
 
 import ipaddress
 import json
@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from rtl_agent.agent import RTLAgent, _save, load_report
 from rtl_agent.captions import circuit_name
 from rtl_agent.control import RunControl, RunStopped
+from rtl_agent.hosting import DAILY_RUN_LIMIT, HostedSettings, SessionStore
 from rtl_agent.models import RunConfig, RunReport
 from rtl_agent.policy import validate_top
 from rtl_agent.providers import OpenAIProvider, max_output_tokens_from_env
@@ -101,7 +102,13 @@ class Job:
 
 
 class RunManager:
-    def __init__(self, root: Path, timeout: float, provider_factory=None):
+    def __init__(
+        self,
+        root: Path,
+        timeout: float,
+        provider_factory=None,
+        sessions: SessionStore | None = None,
+    ):
         self.root, self.timeout = root.resolve(), timeout
         self.root.mkdir(parents=True, exist_ok=True)
         self.provider_factory = provider_factory or (
@@ -112,18 +119,23 @@ class RunManager:
         self.lock = threading.Lock()
         self.active: Job | None = None
         self.jobs: dict[str, Job] = {}
+        self.sessions = sessions
 
-    def start(self, request: RunRequest) -> str:
+    def start(self, request: RunRequest, session_id: str | None = None) -> str:
         with self.lock:
             if self.active is not None:
                 raise HTTPException(
                     409, "A run is already active. Wait for it to finish or stop it."
                 )
+            if self.sessions:
+                self.sessions.reserve(session_id)
             job = Job(request=request, control=RunControl(self.timeout))
             self.active = job
         api_key = os.environ.get("OPENAI_API_KEY", "")
 
         def created(report):
+            if self.sessions:
+                self.sessions.bind_run(session_id, report.run_id)
             job.run_id = report.run_id
             with self.lock:
                 self.jobs[report.run_id] = job
@@ -142,7 +154,10 @@ class RunManager:
                 # Redact the full chained traceback before passing it to logging.
                 # Do not attach the original exception: a formatter could expose it again.
                 details = traceback.format_exc()
-                for key in {api_key, os.environ.get("OPENAI_API_KEY", "")} - {""}:
+                for key in {
+                    api_key,
+                    os.environ.get("OPENAI_API_KEY", ""),
+                } - {""}:
                     for form in (key, repr(key)[1:-1], json.dumps(key)[1:-1]):
                         details = details.replace(form, "[redacted]")
                 logging.exception("Live run worker failed:\n%s", details, exc_info=False)
@@ -202,10 +217,12 @@ class RunManager:
         result["worker_active"] = bool(job and job.thread and job.thread.is_alive())
         return result
 
-    def gallery(self) -> list[dict]:
+    def gallery(self, run_ids: set[str] | None = None) -> list[dict]:
         """Read completed local runs without loading their source or VCD artifacts."""
         records = []
         for directory in sorted(self.root.iterdir(), reverse=True):
+            if run_ids is not None and directory.name not in run_ids:
+                continue
             try:
                 path = artifact(self.root, directory.name, "report.json")
                 text = read_text(path, limit=16 * 1024 * 1024)
@@ -273,11 +290,21 @@ class RunManager:
 
 
 def create_app(
-    *, runs_dir: Path = Path("runs"), run_timeout: float = 600, provider_factory=None
+    *,
+    runs_dir: Path = Path("runs"),
+    run_timeout: float = 600,
+    provider_factory=None,
+    hosted: HostedSettings | None = None,
 ) -> FastAPI:
     if not 0 < run_timeout <= 1800:
         raise ValueError("Run timeout must be between 0 and 1800 seconds.")
-    manager = RunManager(runs_dir, run_timeout, provider_factory)
+    sessions = SessionStore(runs_dir.resolve()) if hosted else None
+    manager = RunManager(
+        runs_dir,
+        min(run_timeout, hosted.run_timeout) if hosted else run_timeout,
+        provider_factory,
+        sessions=sessions,
+    )
 
     @asynccontextmanager
     async def lifespan(app):
@@ -289,23 +316,81 @@ def create_app(
     app.state.manager = manager
 
     @app.middleware("http")
-    async def local_only(request: Request, call_next):
+    async def guard_request(request: Request, call_next):
+        origin = request.headers.get("origin")
+        cors = {}
+        if hosted and origin in hosted.origins:
+            cors = {"Access-Control-Allow-Origin": origin, "Vary": "Origin"}
         try:
-            remote = ipaddress.ip_address(request.client.host)
-            hostname = urlsplit("http://" + request.headers.get("host", "")).hostname
-            allowed = remote.is_loopback and hostname in LOCAL_HOSTS
+            parsed_host = urlsplit("http://" + request.headers.get("host", ""))
+            hostname = parsed_host.hostname
+            if hosted:
+                allowed = hostname in {*LOCAL_HOSTS, hosted.backend_host}
+                if origin and origin not in hosted.origins:
+                    allowed = False
+            else:
+                remote = ipaddress.ip_address(request.client.host)
+                allowed = remote.is_loopback and hostname in LOCAL_HOSTS
+                if origin and origin != f"http://{request.headers.get('host', '')}":
+                    allowed = False
+            if parsed_host.username is not None or parsed_host.password is not None:
+                allowed = False
         except (ValueError, AttributeError):
             allowed = False
-        origin = request.headers.get("origin")
-        if origin and origin != f"http://{request.headers.get('host', '')}":
-            allowed = False
         if not allowed:
-            return JSONResponse({"detail": "Local same-origin requests only."}, status_code=403)
+            return JSONResponse(
+                {
+                    "detail": "Website origin or backend host is not allowed."
+                    if hosted
+                    else "Local same-origin requests only."
+                },
+                status_code=403,
+            )
+        if hosted and request.method == "OPTIONS":
+            requested_headers = {
+                item.strip().lower()
+                for item in request.headers.get("access-control-request-headers", "").split(",")
+                if item.strip()
+            }
+            if (
+                not cors
+                or request.headers.get("access-control-request-method") not in {"GET", "POST"}
+                or not requested_headers <= {"authorization", "content-type"}
+            ):
+                return JSONResponse(
+                    {"detail": "Preflight request is not allowed."}, status_code=403
+                )
+            return Response(
+                status_code=204,
+                headers={
+                    **cors,
+                    "Access-Control-Allow-Methods": "GET, POST",
+                    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+                    "Access-Control-Max-Age": "600",
+                },
+            )
+        if sessions:
+            required = request.url.path.startswith("/api/") and request.url.path not in {
+                "/api/health",
+                "/api/examples",
+                "/api/session",
+            }
+            try:
+                request.state.session_id = sessions.resolve(
+                    request.headers.get("authorization"), required=required
+                )
+            except HTTPException as exc:
+                return JSONResponse(
+                    {"detail": exc.detail},
+                    status_code=exc.status_code,
+                    headers={**cors, **(exc.headers or {}), "Cache-Control": "no-store"},
+                )
         response = await call_next(request)
+        response.headers.update(cors)
+        response.headers["X-Content-Type-Options"] = "nosniff"
         if request.url.path.startswith("/api/"):
             body = b"".join([chunk async for chunk in response.body_iterator])
-            key = os.environ.get("OPENAI_API_KEY", "")
-            if key:
+            for key in {os.environ.get("OPENAI_API_KEY", "")} - {""}:
                 body = body.replace(key.encode(), b"[redacted]")
                 escaped = json.dumps(key)[1:-1].encode()
                 body = body.replace(escaped, b"[redacted]")
@@ -321,10 +406,40 @@ def create_app(
         )
 
     @app.get("/api/health")
-    def get_health():
+    def get_health(request: Request):
         result = health()
         result["busy"] = manager.active is not None
+        if hosted:
+            result.update(
+                hosted=True,
+                session_required=True,
+                session=sessions.info(request.state.session_id)
+                if request.state.session_id
+                else None,
+                usage=sessions.usage(),
+                limits={
+                    "max_attempts": hosted.max_attempts,
+                    "daily_runs": DAILY_RUN_LIMIT,
+                    "run_timeout_seconds": hosted.run_timeout,
+                },
+            )
         return result
+
+    @app.post("/api/session")
+    def start_session(request: Request):
+        if not sessions:
+            raise HTTPException(404, "Local mode does not require Live sessions.")
+        if request.state.session_id:
+            return {
+                "session_token": request.headers["authorization"].partition(" ")[2],
+                "session": sessions.info(request.state.session_id),
+                "usage": sessions.usage(),
+            }
+        return sessions.create()
+
+    def require_run_owner(request: Request, run_id: str):
+        if sessions:
+            sessions.require_owner(request.state.session_id, run_id)
 
     @app.get("/api/examples")
     def examples():
@@ -341,25 +456,36 @@ def create_app(
         ]
 
     @app.get("/api/runs")
-    def saved_runs():
-        return manager.gallery()
+    def saved_runs(request: Request):
+        return manager.gallery(sessions.owned_runs(request.state.session_id) if sessions else None)
 
     @app.post("/api/run", status_code=202)
-    def start_run(request: RunRequest):
+    def start_run(payload: RunRequest, request: Request):
         ready = health()
         if not ready["live_available"]:
             raise HTTPException(503, ready["reason"])
-        return {"run_id": manager.start(request)}
+        if hosted:
+            payload = payload.model_copy(
+                update={"max_attempts": min(payload.max_attempts, hosted.max_attempts)}
+            )
+        session_id = request.state.session_id if sessions else None
+        result = {"run_id": manager.start(payload, session_id)}
+        if sessions:
+            result["session"] = sessions.info(session_id)
+            result["usage"] = sessions.usage()
+        return result
 
     @app.get("/api/run/{run_id}")
-    def get_run(run_id: str):
+    def get_run(run_id: str, request: Request):
+        require_run_owner(request, run_id)
         try:
             return manager.report(run_id)
         except (ValueError, OSError):
             raise HTTPException(404, "Run report is unavailable or invalid.") from None
 
     @app.post("/api/run/{run_id}/cancel", status_code=202)
-    def cancel_run(run_id: str):
+    def cancel_run(run_id: str, request: Request):
+        require_run_owner(request, run_id)
         try:
             artifact(manager.root, run_id)
         except ValueError:
@@ -374,7 +500,8 @@ def create_app(
         }
 
     @app.get("/api/run/{run_id}/attempts/{number}/waveform")
-    def get_waveform(run_id: str, number: int, explain: bool = False):
+    def get_waveform(run_id: str, number: int, request: Request, explain: bool = False):
+        require_run_owner(request, run_id)
         if not 1 <= number <= 20:
             raise HTTPException(404, "Attempt not found.")
         try:

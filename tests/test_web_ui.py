@@ -14,6 +14,8 @@ PAGE = Path(__file__).parents[1] / "web" / "index.html"
 
 def page_function(source, name):
     start = source.index(f"function {name}(")
+    if source[max(0, start - 6) : start] == "async ":
+        start -= 6
     end = source.index("\n}", start) + 2
     return source[start:end]
 
@@ -197,3 +199,87 @@ console.log(JSON.stringify({firstVisit,skipped,secondVisitScheduled,reopened,
         "seen": "seen",
         "unchanged": True,
     }
+
+
+def test_hosted_requests_send_session_header_to_backend_without_cookies_or_key():
+    result = ui_result(
+        """
+const API_BASE_URL='https://backend.hf.space';
+let liveSessionToken='fixture-session-token',apiHealth={session:{remaining:9}};
+let request;
+async function fetch(url,options){request={url,method:options.method,
+  access:options.headers.get('Authorization'),credentials:options.credentials,
+  body:options.body};return {status:202,ok:true,json:async()=>({run_id:'fixture'})};}
+await apiRequest('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({spec:'An adder.',top:'dut',max_attempts:2})});
+console.log(JSON.stringify(request));
+""",
+        names=("apiRequest",),
+    )
+    assert result == {
+        "url": "https://backend.hf.space/api/run",
+        "method": "POST",
+        "access": "Bearer fixture-session-token",
+        "credentials": "omit",
+        "body": '{"spec":"An adder.","top":"dut","max_attempts":2}',
+    }
+
+
+def test_old_unauthorized_response_cannot_clear_a_new_session():
+    result = ui_result(
+        """
+const API_BASE_URL='https://backend.hf.space';
+const LIVE_SESSION_KEY='fixture-session';
+const sessionStorage={removeItem(){}};
+let liveSessionToken='old-session',apiHealth={session:{remaining:9}},deliver;
+function fetch(){return new Promise(resolve=>deliver=resolve);}
+const pending=apiRequest('/api/health');
+liveSessionToken='new-session';
+deliver({status:401,ok:false,json:async()=>({detail:'Access locked.'})});
+try{await pending;}catch{}
+console.log(JSON.stringify({session:liveSessionToken,remaining:apiHealth.session.remaining}));
+""",
+        names=("apiRequest", "clearLiveSession"),
+    )
+    assert result == {"session": "new-session", "remaining": 9}
+
+
+def test_hosted_health_unauthorized_without_a_token_does_not_retry_forever():
+    result = ui_result(
+        """
+const API_BASE_URL='https://backend.hf.space';
+let liveSessionToken='',apiHealth=null,healthRequest=0,calls=0,message='';
+async function apiRequest(){calls++;throw Object.assign(new Error('Unavailable'),{status:401});}
+function showConnectionError(text){message=text;}
+const ready=await refreshHealth();
+console.log(JSON.stringify({calls,ready,disabled:$('mode-live').disabled,message}));
+""",
+        names=("refreshHealth",),
+    )
+    assert result["calls"] == 1 and result["ready"] is None
+    assert result["disabled"] and "unavailable" in result["message"]
+
+
+def test_shared_daily_count_disables_live_and_reset_restores_it_without_changing_results():
+    result = ui_result(
+        """
+const state={running:false,report:{status:'passed',attempts:[{status:'passed'}]}},
+  engine={mode:'live'};
+let liveSessionToken='server-issued-token',sessionRequest=null;
+const apiHealth={hosted:true,live_available:true,session:{runs:40},
+  usage:{remaining:0,limit:20}};
+const before=JSON.stringify(state.report);
+updateHealthDisplay();
+const exhausted={disabled:$('run').disabled,label:$('live-status').textContent};
+engine.mode='replay';updateHealthDisplay();const replayAvailable=!$('run').disabled;
+engine.mode='live';apiHealth.usage.remaining=20;updateHealthDisplay();
+console.log(JSON.stringify({exhausted,replayAvailable,resetEnablesLive:!$('run').disabled,
+  resetLabel:$('live-status').textContent,unchanged:before===JSON.stringify(state.report)}));
+""",
+        names=("hasLiveSession", "liveQuotaReached", "updateHealthDisplay"),
+    )
+    assert result["exhausted"]["disabled"]
+    assert "0 of 20, shared by everyone" in result["exhausted"]["label"]
+    assert "midnight Singapore time" in result["exhausted"]["label"]
+    assert "20 of 20" in result["resetLabel"]
+    assert result["replayAvailable"] and result["resetEnablesLive"] and result["unchanged"]

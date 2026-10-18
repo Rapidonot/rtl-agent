@@ -11,3 +11,6 @@ build/
 !.env.example
 runs/
 .DS_Store
+.vercel/
+
+.hosted-*.sqlite3*
