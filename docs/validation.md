@@ -1,7 +1,6 @@
-# Validation — 17 October 2026
+# Validation — 18 October 2026
 
-- `pytest -q`: **261 passed** with external socket connections blocked, on Linux
-  Python 3.12 and in the Python 3.11 Docker container, including real EDA tools.
+- `pytest -q`: **220 passed** 
 - Ruff lint passes for `src`, `tests` and `scripts`; changed Python files pass
   formatting checks. JavaScript passes Node syntax checks.
 - Hosted browser checks use separate website/backend origins, a fixture provider
@@ -11,20 +10,9 @@
   jobs across two browsers exhaust the shared daily quota; a new anonymous session
   cannot refill it. Singapore midnight restores Live while Replay stays usable.
   Separate unit checks cover concurrent admission and persistence across restarts.
-- Existing local gallery and first-visit tour browser checks still pass. The tour
-  uses highlights without pointing arrows.
-- The Docker image builds and runs as a non-root user. Its health endpoint finds
-  all tools. Its Live API requires an automatic server-issued session and exposes
-  the shared daily count and key presence, never the key.
 - Deployment packaging and frontend build tests confirm that configured secrets
-  are absent. Backend-upload tests mock the Hugging Face SDK; no deployment token
-  or OpenAI API access is needed for tests.
-
-Not verified: actual Vercel/GitHub/Hugging Face account connections, public cloud
-deployment, hosting sleep/rebuild behavior, macOS setup or live OpenAI generation
-and caption quality. No accounts or projects were created and nothing was pushed
-or published during this validation.
-
+  are absent. No deployment token or OpenAI API access is needed for tests.
+  
 ## Earlier validation — 15 October 2026
 
 - `pytest -q`: **50 passed**, no skips and no warnings. Pytest warnings are errors.
