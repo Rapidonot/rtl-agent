@@ -97,6 +97,10 @@ The tests run EDA tools on an NPU MAC fixture, including designs with deliberate
 - Prompts entered in Live are sent to OpenAI, so they shouldn't contain personal information.
 - Passing the checks is strong evidence that a design works, not a formal proof. Since the AI writes the test too, a bad test could let a bad design through.
 
+## Acknowledgements
+
+Codex was used to aid in creating the site, and for debugging of code. 
+
 ## License
 
 Released under the [MIT License](LICENSE).
