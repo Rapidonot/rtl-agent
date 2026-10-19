@@ -59,9 +59,13 @@ tasks, correct inconsistent declarations in the supplied buggy code.
 Assert expected port widths using $bits on the instantiated DUT ports.
 Use directed cases with distinct operands for each operation and select value;
 exercise each data bit and derive expected results from the written requirements.
-For sequential behavior, first write expected input/output cycles in comments.
-Check exact outputs on every relevant edge, including before and after changes;
-derive expected timing from the specification rather than copying a DUT-style FSM.
+For sequential tests, write expected cycles in comments and account for every active
+clock edge, including between task calls, and asynchronous reset events.
+Advance expected state for each event; check outputs before edges and after settling.
+Set load/enable controls to explicit idle values whenever no operation is intended,
+especially before releasing reset. Distinguish output reset from input-history
+sampling: reset only the state required by the specification and test reset release.
+Measure latency from sampled inputs, without extra cycles or copying a DUT FSM.
 The testbench must independently compute expected values from the specification,
 exercise reset, nominal behavior, boundary conditions and sequential timing, and
 use explicit if (...) $fatal(1, "...") checks (include expected/actual/time).
