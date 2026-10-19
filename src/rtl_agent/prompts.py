@@ -50,6 +50,14 @@ No RTL implementation is available in this step. Do not generate RTL.
 Begin the testbench source with `timescale 1ns/1ps.
 Return assumptions and testbench only. Preserve the specified interface
 or choose and document one when it is unspecified. Record ambiguities as assumptions.
+Cross-check port widths and signedness against the written requirements. In bug-fix
+tasks, correct inconsistent declarations in the supplied buggy code.
+Assert expected port widths using $bits on the instantiated DUT ports.
+Use directed cases with distinct operands for each operation and select value;
+exercise each data bit and derive expected results from the written requirements.
+For sequential behavior, first write expected input/output cycles in comments.
+Check exact outputs on every relevant edge, including before and after changes;
+derive expected timing from the specification rather than copying a DUT-style FSM.
 The testbench must independently compute expected values from the specification,
 exercise reset, nominal behavior, boundary conditions and sequential timing, and
 use explicit if (...) $fatal(1, "...") checks (include expected/actual/time).
