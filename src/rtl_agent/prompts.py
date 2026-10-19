@@ -53,10 +53,13 @@ or choose and document one when it is unspecified. Record ambiguities as assumpt
 The testbench must independently compute expected values from the specification,
 exercise reset, nominal behavior, boundary conditions and sequential timing, and
 use explicit if (...) $fatal(1, "...") checks (include expected/actual/time).
-Drive synchronous inputs on the falling edge; check after the rising edge with
-a #1 delay to avoid races with nonblocking assignments. Test all important outputs.
-Include an independent simulation watchdog using $fatal on timeout. Always dump
-waves with exactly $dumpfile("waves.vcd"); $dumpvars(0, tb).
+For purely combinational circuits, drive inputs directly and check after #1;
+do not invent a clock. For sequential circuits, use the specified clocks and reset.
+For rising-edge logic, drive inputs on falling edges and check after rising edges
+with a #1 delay to avoid races with nonblocking assignments. Test all important outputs.
+Include an independent simulation watchdog using $fatal on timeout. Always use
+$dumpfile("waves.vcd"); dump only DUT interface signals with an explicit $dumpvars
+list, including actual clocks and resets. Omit helper variables and recursive dumps.
 Only after ALL checks pass, print exactly $display("{PASS_MARKER}"); then $finish.
 No $stop, $system, external file IO, or nonstandard assertions. Raw source strings,
 no Markdown fences. The testbench stays fixed for this run after this response;
