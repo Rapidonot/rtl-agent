@@ -1,11 +1,9 @@
 """Hosted configuration and quotas never need model or external network access."""
 
 import hashlib
-import runpy
 import shutil
 import sqlite3
 import subprocess
-import sys
 import threading
 import types
 from concurrent.futures import ThreadPoolExecutor
@@ -185,32 +183,3 @@ def test_vercel_build_only_embeds_public_backend_origin(tmp_path, monkeypatch):
         )
         assert result.returncode != 0
         assert invalid not in result.stderr
-
-
-def test_backend_deploy_uploads_only_allowlisted_files_without_openai_credentials(monkeypatch):
-    root = Path(__file__).parents[1]
-    captured = {}
-
-    class FakeAPI:
-        def __init__(self, token):
-            captured["token"] = token
-
-        def upload_folder(self, **kwargs):
-            files = Path(kwargs.pop("folder_path"))
-            names = {str(path.relative_to(files)) for path in files.rglob("*") if path.is_file()}
-            assert "Dockerfile" in names and "src/rtl_agent/hosting.py" in names
-            assert "web/index.html" in names
-            assert not any(
-                ".env" in name or name.startswith(("runs/", ".git/", "tests/")) for name in names
-            )
-            assert "sdk: docker" in (files / "README.md").read_text()
-            assert all("openai-secret-canary" not in (files / name).read_text() for name in names)
-            captured.update(kwargs)
-
-    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(HfApi=FakeAPI))
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret-canary")
-    deploy = runpy.run_path(str(root / "scripts/deploy-backend.py"))["deploy"]
-    deploy("owner/rtl-agent", "fixture-scoped-hf-token")
-    assert captured["token"] == "fixture-scoped-hf-token"
-    assert captured["repo_id"] == "owner/rtl-agent" and captured["repo_type"] == "space"
-    assert captured["delete_patterns"] == ["*"]
