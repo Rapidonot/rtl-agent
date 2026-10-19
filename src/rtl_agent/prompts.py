@@ -19,6 +19,10 @@ RTL must use synthesizable logic, no initial blocks, delays, simulation control,
 printing, randomization, file IO, or references into the testbench. Use sized
 constants and explicit widths. Ensure reset behavior and clock-cycle latency are
 clear and avoid inferred latches. Combinational helper modules are allowed.
+For UNUSEDSIGNAL, check the specification first: implement any missing required use.
+For genuinely discarded bits, preserve the interface and connect only those bits to
+a commented wire named unused_<purpose>, with no connection to outputs or state.
+Never add canceling XORs, zero-masked output terms or dummy logic to silence lint.
 """
 
 
