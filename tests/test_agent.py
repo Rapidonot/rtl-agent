@@ -174,3 +174,46 @@ def test_synthesis_failure_cannot_pass_run(make_agent):
     assert report.attempts[0].tools[-1].stage == "synth"
     assert report.synthesis is None
     assert not (Path(report.run_dir) / "npu_neural_mac.sv").exists()
+
+
+@pytest.mark.parametrize("ending", ["", "\n", "\n\n"])
+def test_missing_rtl_newline_is_added_without_changing_existing_endings(
+    make_agent, design, provider, ending
+):
+    design.rtl = design.rtl.rstrip("\n") + ending
+    expected = design.rtl if ending else design.rtl + "\n"
+    report = make_agent(max_attempts=1).run(SPEC)
+    assert report.passed and len(report.attempts) == 1
+    provider.repair.assert_not_called()
+    directory = Path(report.run_dir)
+    for path in (directory / "npu_neural_mac.sv", directory / "attempts/01/npu_neural_mac.sv"):
+        assert path.read_bytes() == expected.encode()
+    assert report.attempts[0].rtl_sha256 == hashlib.sha256(expected.encode()).hexdigest()
+    assert all(tool.passed for tool in report.attempts[0].tools)
+    assert "EOFNEWLINE" not in report.attempts[0].tools[0].output
+
+
+def test_rtl_repairs_get_final_newlines_without_masking_functional_errors(
+    make_agent, design, provider
+):
+    repaired = design.rtl.rstrip("\n")
+    design.rtl = repaired.replace("acc +", "acc -")
+    provider.repair.return_value.rtl = repaired
+    report = make_agent().run(SPEC)
+    assert [attempt.passed for attempt in report.attempts] == [False, True]
+    assert report.attempts[0].tools[0].passed  # Formatting cannot consume a repair.
+    simulation = report.attempts[0].tools[-1]
+    assert simulation.stage == "simulate" and not simulation.passed
+    assert "expected=12 actual=-12" in simulation.output
+    assert provider.repair.call_args.args[2] == design.rtl + "\n"
+    directory = Path(report.run_dir)
+    for attempt, expected in zip(
+        report.attempts, (design.rtl + "\n", repaired + "\n"), strict=True
+    ):
+        path = directory / "attempts" / f"{attempt.number:02d}" / "npu_neural_mac.sv"
+        assert path.read_bytes() == expected.encode()
+        assert attempt.rtl_sha256 == hashlib.sha256(expected.encode()).hexdigest()
+        assert "EOFNEWLINE" not in attempt.tools[0].output
+    assert (directory / "npu_neural_mac.sv").read_bytes() == (repaired + "\n").encode()
+    for path in directory.rglob("tb.sv"):
+        assert path.read_bytes() == design.testbench.encode()

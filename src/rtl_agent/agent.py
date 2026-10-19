@@ -200,6 +200,8 @@ class RTLAgent:
             rtl = draft.rtl
             change_summary = "Initial generation."
             for number in range(1, self.config.max_attempts + 1):
+                if not rtl.endswith("\n"):
+                    rtl += "\n"
                 attempt_dir = directory / "attempts" / f"{number:02d}"
                 attempt_dir.mkdir(parents=True)
                 rtl_path = attempt_dir / f"{self.config.top}.sv"
