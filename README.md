@@ -18,6 +18,27 @@ The tool takes a written circuit specification, asks OpenAI for a testbench and 
 
 The frontend runs on Vercel, and the backend runs on Render.
 
+## Evaluation
+
+I tested RTL Agent using [VerilogEval](https://github.com/NVlabs/verilog-eval), splitting its 156 problems into 56 development problems and 100 reserved for an evaluation. I checked for overlap and kept detected duplicates together.
+
+The development run helped identify problems with generated testbenches, clock timing and latch handling. After reviewing those results, I removed a local timing-prompt experiment and used the published version at commit `644b117` for the remaining 100 problems. No code or settings were changed during that evaluation.
+
+Both runs used GPT-6 Luna, with one trial per problem and up to three RTL candidates. The agent generated its testbench before seeing the RTL and kept it unchanged during repairs. 
+
+| Measure | evaluation |
+|---|---:|
+| Problems selected | 100 |
+| Problems evaluated | 98 |
+| First RTL draft passed official tests | 84/98 — 85.7% |
+| Agent accepted RTL that passed official tests | **80/98 — 81.6%** |
+| Any saved candidate passed official tests | 88/98 — 89.8% |
+| Agent PASS on failed tests | 10 |
+
+Two problems in each group failed reference preflight and were recorded separately as benchmark errors. 
+
+The main result is **81.6%**. Although 88 problems had a passing candidate, eight were rejected or stopped by the agent’s own checks. The ten false PASS results also show that passing a generated testbench does not guarantee correctness.
+
 ## Rationale
 
 Simply using an AI in a chatbot environment may generate hardware designs that look correct. However, in reality, they may be incorrect since they were not checked.
@@ -99,7 +120,7 @@ The tests run EDA tools on an NPU MAC fixture, including designs with deliberate
 
 ## Acknowledgements
 
-Codex was used to aid in creating the site, and for debugging of code. 
+Codex was used to aid in creating the site (frontend + backend) and for debugging of code. 
 
 ## License
 
