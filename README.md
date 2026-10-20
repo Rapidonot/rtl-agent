@@ -4,6 +4,8 @@ Describe a small digital circuit in plain words and an AI designs it. Checking t
 
 **[Try it here](https://rtl-agent-seven.vercel.app)** (no install or API key needed; the first load can take about a minute)
 
+How this was built and what went wrong: [development story](docs/Dev-story.md)
+
 ## How it works
 
 RTL Agent uses compiler and simulation feedback to help an LLM fix small hardware designs. The current focus is building blocks used in CPU, GPU and NPU architectures.
