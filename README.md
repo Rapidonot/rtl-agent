@@ -6,6 +6,12 @@ Describe a small digital circuit in plain words and an AI designs it. Checking t
 
 How this was built and what went wrong: [development story](docs/Dev-story.md)
 
+
+
+https://github.com/user-attachments/assets/3e91b39b-1055-4924-9d92-f0e7fc6afba8
+
+
+
 ## How it works
 
 RTL Agent uses compiler and simulation feedback to help an LLM fix small hardware designs. The current focus is building blocks used in CPU, GPU and NPU architectures.
